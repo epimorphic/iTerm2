@@ -3568,6 +3568,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     if ([item action]==@selector(mail:) ||
         [item action]==@selector(browse:) ||
         [item action]==@selector(searchInBrowser:) ||
+        [item action]==@selector(openSingleUseManPageWindow:) ||
         [item action]==@selector(addNote:) ||
         [item action]==@selector(copy:) ||
         [item action]==@selector(copyWithStyles:) ||
@@ -4621,6 +4622,13 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     }
 
     // Menu items for acting on text selections
+    //if([self hasMarkedText]) {
+        [theMenu addItemWithTitle:@"Open man page"
+                           action:@selector(openSingleUseManPageWindow:)
+                    keyEquivalent:@""];
+        [[theMenu itemAtIndex:[theMenu numberOfItems] - 1] setTarget:self];
+    //}
+    
     NSString *scpTitle = @"Download with scp";
     if ([self _haveShortSelection]) {
         SCPPath *scpPath = [_dataSource scpPathForFile:[self selectedText]
@@ -4787,6 +4795,36 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         [NSString stringWithFormat:[iTermAdvancedSettingsModel searchCommand],
                                    [[self selectedText] stringWithPercentEscape]];
     [self findUrlInString:url andOpenInBackground:NO];
+}
+
+- (void)openSingleUseManPageWindow:(id)sender {
+    // If selected length is longer than 2 * PATH_MAX, do nothing.
+    // Avoids operating on really long selections that can't be man arguments.
+    if([[self selectedText] length] > 2048)
+        return;
+    NSString *name = [self selectedText];
+    
+    // // check if selected text is a valid file path
+    //    NSFileManager* fm = [NSFileManager init];
+    //    if(![fm fileExistsAtPath:name]) {
+    //        // remove first instance of <bad character(s)> and everything after
+    //        // remove: ( ; CR LF \ ' " # any_non-printable_characters
+    //        //   keep: - + . _
+    //    }
+    
+    NSString *overstrikeFormatterPath = [[NSBundle mainBundle] pathForResource:@"overstrike_formatter"
+                                                                        ofType:nil];
+    NSString *command = [[@"man -P '$pager' "
+                            stringByReplacingOccurrencesOfString:@"$pager"
+                            withString:overstrikeFormatterPath]
+                                 stringByAppendingString:name];
+    [[iTermController sharedInstance]
+        openSingleUseWindowWithCommand:command
+                                inject:nil
+                           environment:nil
+                                   pwd:nil
+                               options:iTermSingleUseWindowOptionsSuppressBrokenPipeActions
+                            completion:nil];
 }
 
 #pragma mark - Drag and Drop

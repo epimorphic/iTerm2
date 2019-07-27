@@ -491,6 +491,7 @@ typedef enum {
 @property(nonatomic, readonly) iTermEchoProbe *echoProbe;
 @property(nonatomic, readonly) BOOL canOpenPasswordManager;
 @property(nonatomic) BOOL shortLivedSingleUse;
+@property(nonatomic) BOOL suppressBrokenPipeActions;
 
 #pragma mark - methods
 
@@ -514,6 +515,7 @@ typedef enum {
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initSynthetic:(BOOL)synthetic NS_DESIGNATED_INITIALIZER;
+//- (instancetype)initDoNothingOnBrokenPipe;
 
 - (void)didFinishInitialization:(BOOL)ok;
 

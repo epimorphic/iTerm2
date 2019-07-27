@@ -427,6 +427,8 @@ static const NSUInteger kMaxHosts = 100;
 
     // Synthetic sessions are used for "zoom in" and DVR, and their closing cannot be undone.
     BOOL _synthetic;
+    
+//    BOOL _suppressBrokenPipeActions;
 
     // Cached advanced setting
     NSTimeInterval _idleTime;
@@ -545,6 +547,11 @@ static const NSUInteger kMaxHosts = 100;
     assert(NO);
     return [self initSynthetic:NO];
 }
+
+//- (instancetype)initDoNothingOnBrokenPipe {
+//    _suppressBrokenPipeActions = YES;
+//    return [self initSynthetic:NO];
+//}
 
 - (instancetype)initSynthetic:(BOOL)synthetic {
     self = [super init];
@@ -2912,6 +2919,12 @@ ITERM_WEAKLY_REFERENCEABLE
         return;
     }
     [_shell killServerIfRunning];
+    
+    if(_suppressBrokenPipeActions) {
+        _exited = YES;
+        return;
+    }
+    
     if ([self shouldPostUserNotification] &&
         [iTermProfilePreferences boolForKey:KEY_SEND_SESSION_ENDED_ALERT inProfile:self.profile]) {
         [[iTermNotificationController sharedInstance] notify:@"Session Ended"

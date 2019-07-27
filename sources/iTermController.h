@@ -181,6 +181,8 @@ typedef NS_OPTIONS(NSUInteger, iTermSingleUseWindowOptions) {
     iTermSingleUseWindowOptionsCloseOnTermination = (1 << 1),
     // Bury it immediately?
     iTermSingleUseWindowOptionsInitiallyBuried = (1 << 2),
+    //
+    iTermSingleUseWindowOptionsSuppressBrokenPipeActions = (1 << 3),
 };
 
 - (PTYSession *)openSingleUseWindowWithCommand:(NSString *)command;

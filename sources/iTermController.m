@@ -1607,12 +1607,16 @@ static iTermController *gSharedInstance;
     PTYSession *(^makeSession)(Profile *, PseudoTerminal *) = ^PTYSession *(Profile *profile, PseudoTerminal *term)  {
         profile = [profile dictionaryBySettingObject:@"" forKey:KEY_INITIAL_TEXT];
         const BOOL closeSessionsOnEnd = !!(options & iTermSingleUseWindowOptionsCloseOnTermination);
+        const BOOL suppressBrokenPipeActions = !!(options & iTermSingleUseWindowOptionsSuppressBrokenPipeActions);
         profile = [profile dictionaryBySettingObject:@(closeSessionsOnEnd) forKey:KEY_CLOSE_SESSIONS_ON_END];
         term.window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
         if (shortLived) {
             profile = [profile dictionaryBySettingObject:@0 forKey:KEY_UNDO_TIMEOUT];
         }
         PTYSession *session = [term createTabWithProfile:profile withCommand:command environment:environment];
+        if (suppressBrokenPipeActions) {
+            session.suppressBrokenPipeActions = YES;
+        }
         if (shortLived) {
             session.shortLivedSingleUse = YES;
         }
