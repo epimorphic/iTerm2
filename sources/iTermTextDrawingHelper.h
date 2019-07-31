@@ -290,6 +290,8 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property (nonatomic) CGFloat badgeTopMargin;
 @property (nonatomic) CGFloat badgeRightMargin;
 
+@property (nonatomic, readonly) NSColor *blockCursorFillColorRespectingSmartSelection;
+
 // imageSize: size of image to draw
 // destinationRect: rect bounding the region of a scrollview's content view (i.e., very tall view) that's being drawn
 // destinationFrameSize: size of the scrollview's content view
@@ -328,7 +330,10 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 - (VT100GridCoordRange)coordRangeForRect:(NSRect)rect;
 
 - (CGFloat)yOriginForUnderlineForFont:(NSFont *)font yOffset:(CGFloat)yOffset cellHeight:(CGFloat)cellHeight;
+- (CGFloat)yOriginForStrikethroughForFont:(NSFont *)font yOffset:(CGFloat)yOffset cellHeight:(CGFloat)cellHeight;
+
 - (CGFloat)underlineThicknessForFont:(NSFont *)font;
+- (CGFloat)strikethroughThicknessForFont:(NSFont *)font;
 - (NSRange)underlinedRangeOnLine:(long long)row;
 
 - (void)updateCachedMetrics;
@@ -336,6 +341,7 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @end
 
 NS_INLINE BOOL iTermTextDrawingHelperIsCharacterDrawable(const screen_char_t *const c,
+                                                         const screen_char_t *const predecessor,
                                                          BOOL isStringifiable,
                                                          BOOL blinkingItemsVisible,
                                                          BOOL blinkAllowed) {
@@ -349,7 +355,15 @@ NS_INLINE BOOL iTermTextDrawingHelperIsCharacterDrawable(const screen_char_t *co
             code == TAB_FILLER ||
             code < ' ') {
             return NO;
-        } else if (code == ' ' && !c->underline && !c->urlCode) {
+        } else if (code == ' ' &&
+                   !c->underline &&
+                   !c->strikethrough &&
+                   !c->urlCode) {
+            return NO;
+        }
+    } else if (predecessor && ComplexCharCodeIsSpacingCombiningMark(c->code)) {
+        if (predecessor->complexChar || predecessor->code > 127) {
+            // A spacing combining mark that has a non-ascii predecessor is not visible because the predecessor draws it.
             return NO;
         }
     }

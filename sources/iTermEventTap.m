@@ -5,6 +5,7 @@
 #import "iTermApplicationDelegate.h"
 #import "iTermEventTap.h"
 #import "iTermNotificationCenter.h"
+#import "iTermSecureKeyboardEntryController.h"
 #import "NSArray+iTerm.h"
 
 NSString *const iTermEventTapEventTappedNotification = @"iTermEventTapEventTappedNotification";
@@ -33,8 +34,17 @@ NSString *const iTermEventTapEventTappedNotification = @"iTermEventTapEventTappe
     return self;
 }
 
+- (BOOL)isProcessTrustedWithPrompt:(BOOL)prompt {
+    return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge id)kAXTrustedCheckOptionPrompt: @(prompt)});
+}
+
 - (void)secureInputDidChange:(NSNotification *)notification {
-    [self setEnabled:[self shouldBeEnabled]];
+    // Avoid trying to enable it if the process is not trusted because this gets called when the
+    // app is activated/deactivated
+    const BOOL shouldBeEnabled = self.shouldBeEnabled;
+    if (!shouldBeEnabled || [self isProcessTrustedWithPrompt:NO]) {
+        [self setEnabled:shouldBeEnabled];
+    }
 }
 
 #pragma mark - APIs
@@ -252,6 +262,19 @@ error:
 @end
 
 @implementation iTermFlagsChangedEventTap
+
++ (instancetype)sharedInstanceCreatingIfNeeded:(BOOL)createIfNeeded {
+    NSAssert([NSThread isMainThread], @"Don't call this off the main thread because it's not thread-safe");
+    static dispatch_once_t onceToken;
+    static id instance;
+    if (!createIfNeeded) {
+        return instance;
+    }
+    dispatch_once(&onceToken, ^{
+        instance = [[iTermFlagsChangedEventTap alloc] initPrivate];
+    });
+    return instance;
+}
 
 + (instancetype)sharedInstance {
     static dispatch_once_t onceToken;

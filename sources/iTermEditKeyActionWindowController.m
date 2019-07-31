@@ -8,6 +8,7 @@
 
 #import "iTermEditKeyActionWindowController.h"
 
+#import "iTermActionsModel.h"
 #import "iTermFunctionCallTextFieldDelegate.h"
 #import "iTermPasteSpecialViewController.h"
 #import "iTermPreferences.h"
@@ -41,6 +42,7 @@
 
     iTermPasteSpecialViewController *_pasteSpecialViewController;
     iTermFunctionCallTextFieldDelegate *_functionCallDelegate;
+    iTermFunctionCallTextFieldDelegate *_labelDelegate;
 }
 
 - (instancetype)initWithContext:(iTermVariablesSuggestionContext)context {
@@ -140,6 +142,57 @@
     _action = action;
 }
 
+- (iTermAction *)unboundAction {
+    return [[iTermAction alloc] initWithTitle:self.label
+                                       action:self.action
+                                     parameter:self.parameterValue];
+}
+
+- (void)setMode:(iTermEditKeyActionWindowControllerMode)mode {
+    _mode = mode;
+    [self window];
+    switch (mode) {
+        case iTermEditKeyActionWindowControllerModeKeyboardShortcut:
+            break;
+        case iTermEditKeyActionWindowControllerModeTouchBarItem:
+            _touchBarLabel.placeholderString = @"Label to show in Touch Bar";
+            [self removeActionsRequiringKeyBinding];
+            break;
+        case iTermEditKeyActionWindowControllerModeUnbound:
+            _touchBarLabel.placeholderString = self.titleIsInterpolated ? @"Title (Interpolated String)" : @"Title";
+            [self removeActionsRequiringKeyBinding];
+            break;
+    }
+}
+
+- (void)removeActionsRequiringKeyBinding {
+    NSArray<NSNumber *> *toRemove = @[ @(KEY_ACTION_DO_NOT_REMAP_MODIFIERS),
+                                       @(KEY_ACTION_REMAP_LOCALLY),
+                                       @(KEY_ACTION_NEXT_MRU_TAB),
+                                       @(KEY_ACTION_PREVIOUS_MRU_TAB),
+                                       ];
+    NSMutableIndexSet *indexes = [[NSMutableIndexSet alloc] init];
+    [_actionPopup.menu.itemArray enumerateObjectsUsingBlock:^(NSMenuItem * _Nonnull menuItem, NSUInteger idx, BOOL * _Nonnull stop) {
+        if ([toRemove containsObject:@(menuItem.tag)]) {
+            [indexes addIndex:idx];
+        }
+    }];
+    [indexes enumerateIndexesWithOptions:NSEnumerationReverse usingBlock:^(NSUInteger idx, BOOL * _Nonnull stop) {
+        [self->_actionPopup.menu removeItemAtIndex:idx];
+    }];
+}
+
+- (NSString *)identifier {
+    switch (_mode) {
+        case iTermEditKeyActionWindowControllerModeKeyboardShortcut:
+            return self.currentKeyCombination;
+        case iTermEditKeyActionWindowControllerModeTouchBarItem:
+            return self.touchBarItemID;
+        case iTermEditKeyActionWindowControllerModeUnbound:
+            return nil;
+    }
+}
+
 #pragma mark - iTermShortcutInputViewDelegate
 
 // Note: This is called directly by iTermHotKeyController when the action requires key remapping
@@ -152,14 +205,30 @@
 
 - (void)updateViewsAnimated:(BOOL)animated {
     int tag = [[_actionPopup selectedItem] tag];
-    if (self.isTouchBarItem) {
-        _keyboardShortcutLabel.stringValue = @"Touch Bar Label";
-        _touchBarLabel.hidden = NO;
-        _shortcutField.hidden = YES;
-    } else {
-        _keyboardShortcutLabel.stringValue = @"Keyboard Shortcut";
-        _touchBarLabel.hidden = YES;
-        _shortcutField.hidden = NO;
+    switch (self.mode) {
+        case iTermEditKeyActionWindowControllerModeUnbound:
+            _keyboardShortcutLabel.stringValue = @"Title";
+            if (self.titleIsInterpolated) {
+                if (!_labelDelegate) {
+                    _labelDelegate = [[iTermFunctionCallTextFieldDelegate alloc] initWithPathSource:[iTermVariableHistory pathSourceForContext:iTermVariablesSuggestionContextSession]
+                                                                                        passthrough:nil
+                                                                                      functionsOnly:NO];
+                }
+                _touchBarLabel.delegate = _labelDelegate;
+            }
+            _touchBarLabel.hidden = NO;
+            _shortcutField.hidden = YES;
+            break;
+        case iTermEditKeyActionWindowControllerModeTouchBarItem:
+            _keyboardShortcutLabel.stringValue = @"Touch Bar Label";
+            _touchBarLabel.hidden = NO;
+            _shortcutField.hidden = YES;
+            break;
+        case iTermEditKeyActionWindowControllerModeKeyboardShortcut:
+            _keyboardShortcutLabel.stringValue = @"Keyboard Shortcut";
+            _touchBarLabel.hidden = YES;
+            _shortcutField.hidden = NO;
+            break;
     }
 
     BOOL parameterHidden = YES;
@@ -213,8 +282,8 @@
             break;
 
         case KEY_ACTION_LOAD_COLOR_PRESET:
-            [_colorPresetsLabel setHidden:NO];
-            [_colorPresetsPopup setHidden:NO];
+            colorPresetsLabelHidden = NO;
+            colorPresetsPopupHidden = NO;
             break;
 
         case KEY_ACTION_DO_NOT_REMAP_MODIFIERS:
@@ -409,17 +478,23 @@
 
 
 - (IBAction)ok:(id)sender {
-    if (self.isTouchBarItem) {
-        if (!_touchBarLabel.stringValue.length) {
-            NSBeep();
-            return;
-        }
-        self.label = _touchBarLabel.stringValue;
-    } else {
-        if (!self.currentKeyCombination) {
-            NSBeep();
-            return;
-        }
+    switch (self.mode) {
+        case iTermEditKeyActionWindowControllerModeUnbound:
+            self.label = _touchBarLabel.stringValue ?: @"";
+            break;
+        case iTermEditKeyActionWindowControllerModeTouchBarItem:
+            if (!_touchBarLabel.stringValue.length) {
+                NSBeep();
+                return;
+            }
+            self.label = _touchBarLabel.stringValue;
+            break;
+        case iTermEditKeyActionWindowControllerModeKeyboardShortcut:
+            if (!self.currentKeyCombination) {
+                NSBeep();
+                return;
+            }
+            break;
     }
 
     self.action = [[_actionPopup selectedItem] tag];

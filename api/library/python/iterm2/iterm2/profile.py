@@ -83,9 +83,12 @@ class LocalWriteOnlyProfile:
     .. seealso::
       * Example ":ref:`copycolor_example`"
       * Example ":ref:`settabcolor_example`"
+      * Example ":ref:`increase_font_size_example`"
     """
-    def __init__(self):
-      self.__values = {}
+    def __init__(self, values={}):
+        self.__values = {}
+        for key, value in values.items():
+            self.__values[key] = json.dumps(value)
 
     @property
     def values(self):
@@ -743,7 +746,11 @@ class LocalWriteOnlyProfile:
         The normal font is used for either ASCII or all characters depending on
         whether a separate font is used for non-ascii.
 
-        :param value: Font name and size as a string."""
+        :param value: Font name and size as a string.
+
+        .. seealso::
+          * Example ":ref:`increase_font_size_example`"
+        """
         return self._simple_set("Normal Font", value)
 
     def set_non_ascii_font(self, value: str):
@@ -965,7 +972,7 @@ class WriteOnlyProfile:
             * Example ":ref:`colorhost_example`"
             * Example ":ref:`random_color_example`"
             * Example ":ref:`theme_example`"
-            * Example ":ref:`darknight`"
+            * Example ":ref:`darknight_example`"
         """
         coros = []
         for value in preset.values:
@@ -1858,6 +1865,11 @@ class Profile(WriteOnlyProfile):
             return None
 
     @property
+    def local_write_only_copy(self) -> LocalWriteOnlyProfile:
+        """Returns a :class:`~iterm2.profile.LocalWriteOnlyProfile` containing the properties in this profile."""
+        return LocalWriteOnlyProfile(self.__props)
+
+    @property
     def all_properties(self):
         return dict(self.__props)
 
@@ -2604,7 +2616,11 @@ class Profile(WriteOnlyProfile):
         The normal font is used for either ASCII or all characters depending on
         whether a separate font is used for non-ascii.
 
-        :returns: Font name and size as a string."""
+        :returns: Font name and size as a string.
+
+        .. seealso::
+          * Example ":ref:`increase_font_size_example`"
+        """
         return self._simple_get("Normal Font")
 
     @property
@@ -2847,7 +2863,7 @@ class PartialProfile(Profile):
 
         .. seealso::
             * Example ":ref:`theme_example`"
-            * Example ":ref:`darknight`"
+            * Example ":ref:`darknight_example`"
         """
         response = await iterm2.rpc.async_list_profiles(connection, guids, properties)
         profiles = []

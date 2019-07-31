@@ -9,6 +9,7 @@
 #import "iTermAdvancedSettingsViewController.h"
 #import "iTermAdvancedSettingsModel.h"
 #import "NSApplication+iTerm.h"
+#import "NSArray+iTerm.h"
 #import "NSMutableAttributedString+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSTextField+iTerm.h"
@@ -42,7 +43,7 @@ static char iTermAdvancedSettingsTableKey;
                 }
                 break;
             case NSBackgroundStyleEmphasized:
-                self.textColor = [NSColor labelColor];
+                self.textColor = [NSColor selectedMenuItemTextColor];
                 if (self.selectedAttributedString) {
                     self.attributedStringValue = self.selectedAttributedString;
                 }
@@ -83,7 +84,7 @@ static char iTermAdvancedSettingsTableKey;
 
 @end
 
-@interface iTermTableViewTextFieldWrapper : NSView
+@interface iTermTableViewTextFieldWrapper : NSTableCellView
 @end
 
 @implementation iTermTableViewTextFieldWrapper
@@ -124,6 +125,7 @@ static NSDictionary *gIntrospection;
     IBOutlet NSTableView *_tableView;
 
     NSArray *_filteredAdvancedSettings;
+    NSArray<iTermPreferencesSearchDocument *> *_docs;
 }
 
 + (NSDictionary *)settingsDictionary {
@@ -215,7 +217,11 @@ static NSDictionary *gIntrospection;
                                                                     attributes:spacerAttributes];
     NSColor *textColor;
     if (@available(macOS 10.14, *)) {
-        textColor = [NSColor labelColor];
+        if (selected) {
+            textColor = [NSColor selectedMenuItemTextColor];
+        } else {
+            textColor = [NSColor labelColor];
+        }
     } else {
         textColor = (selected && self.view.window.isKeyWindow) ? [NSColor whiteColor] : [NSColor blackColor];
     }
@@ -404,7 +410,11 @@ static NSDictionary *gIntrospection;
     if (subtitle) {
         NSColor *color;
         if (@available(macOS 10.14, *)) {
-            color = [NSColor secondaryLabelColor];
+            if (selected) {
+                color = [[NSColor selectedMenuItemTextColor] colorWithAlphaComponent:0.5];
+            } else {
+                color = [NSColor secondaryLabelColor];
+            }
         } else {
             color = (selected && self.view.window.isKeyWindow) ? [NSColor whiteColor] : [NSColor grayColor];
         }
@@ -601,6 +611,59 @@ static NSDictionary *gIntrospection;
     if (rowView) {
         textField.backgroundStyle = [rowView interiorBackgroundStyle];
     }
+}
+
+#pragma mark - iTermSearchableViewController
+
+- (NSString *)documentOwnerIdentifier {
+    return NSStringFromClass(self.class);
+}
+
+- (NSArray<iTermPreferencesSearchDocument *> *)searchableViewControllerDocuments {
+    if (!_docs) {
+        _docs = [[iTermAdvancedSettingsViewController sortedAdvancedSettings] mapWithBlock:^id(NSDictionary *dict) {
+            iTermPreferencesSearchDocument *doc = [iTermPreferencesSearchDocument documentWithDisplayName:@"Advanced Preferences…"  // dict[kAdvancedSettingDescription]
+                                                                                               identifier:@"Advanced Preferences"  // dict[kAdvancedSettingIdentifier]
+                                                                                           keywordPhrases:@[ dict[kAdvancedSettingDescription] ]];
+            doc.queryIndependentScore = -1;
+            doc.ownerIdentifier = self.documentOwnerIdentifier;
+            return doc;
+        }];
+    }
+    return _docs;
+}
+
+- (NSInteger)indexOfIdentifier:(NSString *)identifier {
+    return [self.filteredAdvancedSettings indexOfObjectPassingTest:^BOOL(NSDictionary * _Nonnull dict, NSUInteger idx, BOOL * _Nonnull stop) {
+        if (![dict isKindOfClass:[NSDictionary class]]) {
+            return NO;
+        }
+        return [dict[kAdvancedSettingIdentifier] isEqualToString:identifier];
+    }];
+}
+
+- (NSView *)searchableViewControllerRevealItemForDocument:(iTermPreferencesSearchDocument *)document
+                                                 forQuery:(NSString *)query
+                                            willChangeTab:(BOOL *)willChangeTab {
+    *willChangeTab = NO;
+    NSUInteger index = [self indexOfIdentifier:document.identifier];
+    if (index == NSNotFound) {
+        // Remove the existing search query and try again
+        _filteredAdvancedSettings = nil;
+        [_tableView reloadData];
+        index = [self indexOfIdentifier:document.identifier];
+        
+        if (index == NSNotFound) {
+            // Pull the query from the prefs search engine and try again
+            _searchField.stringValue = query;
+            _filteredAdvancedSettings = nil;
+            [_tableView reloadData];
+            return _tableView.enclosingScrollView;
+        }
+    }
+    [_tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:index] byExtendingSelection:NO];
+    [_tableView scrollRowToVisible:index];
+    return [_tableView viewAtColumn:0 row:index makeIfNecessary:YES];
 }
 
 @end

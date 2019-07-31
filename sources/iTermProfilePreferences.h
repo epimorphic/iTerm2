@@ -79,11 +79,18 @@ extern NSString *const kProfilePreferenceInitialDirectoryAdvancedValue;
         inProfile:(Profile *)profile
             model:(ProfileModel *)model;
 
++ (void)setObject:(id)object
+           forKey:(NSString *)key
+        inProfile:(Profile *)profile
+            model:(ProfileModel *)model
+  withSideEffects:(BOOL)withSideEffects;
+
 // This is used for ensuring that all controls have default values.
 + (BOOL)keyHasDefaultValue:(NSString *)key;
 + (BOOL)defaultValueForKey:(NSString *)key isCompatibleWithType:(PreferenceInfoType)type;
 
 // Returns nil if the value is nil, the key is bogus, or it could not be json encoded for some reason.
 + (NSString *)jsonEncodedValueForKey:(NSString *)key inProfile:(Profile *)profile;
++ (NSArray<NSString *> *)nonDeprecatedKeys;
 
 @end

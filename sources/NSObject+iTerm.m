@@ -8,6 +8,8 @@
 
 #import "NSObject+iTerm.h"
 
+#import "iTermWeakProxy.h"
+
 #import <objc/runtime.h>
 
 @implementation iTermDelayedPerform
@@ -130,7 +132,7 @@
     NSDictionary *dictionary = [NSDictionary castFrom:self];
     if (dictionary) {
         for (NSObject *key in dictionary) {
-            if (![key it_isSafeForPlist]) {
+            if (![key isKindOfClass:[NSString class]]) {
                 return NO;
             }
             if (![dictionary[key] it_isSafeForPlist]) {
@@ -190,6 +192,10 @@
     }
 
     return [NSString stringWithFormat:@"%@ has type %@", path, NSStringFromClass([self class])];
+}
+
+- (instancetype)it_weakProxy {
+    return (id)[[iTermWeakProxy alloc] initWithObject:self];
 }
 
 @end

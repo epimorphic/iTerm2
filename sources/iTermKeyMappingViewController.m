@@ -9,18 +9,25 @@
 #import "iTermKeyMappingViewController.h"
 #import "iTermKeyBindingMgr.h"
 #import "iTermEditKeyActionWindowController.h"
+#import "iTermPreferences.h"
+#import "iTermPreferencesBaseViewController.h"
 #import "PreferencePanel.h"
 
 static NSString *const iTermTouchBarIDPrefix = @"touchbar:";
 
 @implementation iTermKeyMappingViewController {
     IBOutlet NSButton *_addTouchBarItem;
+    IBOutlet NSButton *_hapticFeedbackForEsc;
+    IBOutlet NSButton *_soundForEsc;
+    IBOutlet NSButton *_visualIndicatorForEsc;
     IBOutlet NSTableView *_tableView;
     IBOutlet NSTableColumn *_keyCombinationColumn;
     IBOutlet NSTableColumn *_actionColumn;
     IBOutlet NSButton *_removeMappingButton;
     IBOutlet NSPopUpButton *_presetsPopup;
     iTermEditKeyActionWindowController *_editActionWindowController;
+    IBOutlet NSButton *_touchBarMitigationsButton;
+    IBOutlet NSPanel *_touchBarMitigationsPanel;
 }
 
 - (instancetype)init {
@@ -38,6 +45,42 @@ static NSString *const iTermTouchBarIDPrefix = @"touchbar:";
     _tableView.delegate = nil;
     _tableView.dataSource = nil;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)awakeFromNib {
+    self.hapticFeedbackForEscEnabled = [iTermPreferences boolForKey:kPreferenceKeyEnableHapticFeedbackForEsc];
+    self.soundForEscEnabled = [iTermPreferences boolForKey:kPreferenceKeyEnableSoundForEsc];
+    self.visualIndicatorForEscEnabled = [iTermPreferences boolForKey:kPreferenceKeyVisualIndicatorForEsc];
+}
+
+- (void)setHapticFeedbackForEscEnabled:(BOOL)hapticFeedbackForEscEnabled {
+    _hapticFeedbackForEsc.state = hapticFeedbackForEscEnabled ? NSOnState : NSOffState;
+    [iTermPreferences setBool:hapticFeedbackForEscEnabled
+                       forKey:kPreferenceKeyEnableHapticFeedbackForEsc];
+}
+
+- (BOOL)hapticFeedbackForEscEnabled {
+    return _hapticFeedbackForEsc.state == NSOnState;
+}
+
+- (void)setSoundForEscEnabled:(BOOL)enabled {
+    _soundForEsc.state = enabled ? NSOnState : NSOffState;
+    [iTermPreferences setBool:enabled
+                       forKey:kPreferenceKeyEnableSoundForEsc];
+}
+
+- (BOOL)soundForEscEnabled {
+    return _soundForEsc.state == NSOnState;
+}
+
+- (void)setVisualIndicatorForEscEnabled:(BOOL)enabled {
+    _visualIndicatorForEsc.state = enabled ? NSOnState : NSOffState;
+    [iTermPreferences setBool:enabled
+                       forKey:kPreferenceKeyVisualIndicatorForEsc];
+}
+
+- (BOOL)visualIndicatorForEscEnabled {
+    return _visualIndicatorForEsc.state == NSOnState;
 }
 
 - (void)keyBindingsChanged {
@@ -65,6 +108,24 @@ static NSString *const iTermTouchBarIDPrefix = @"touchbar:";
 
 - (void)hideAddTouchBarItem {
     _addTouchBarItem.hidden = YES;
+    _touchBarMitigationsButton.hidden = YES;
+}
+
+- (void)addViewsToSearchIndex:(iTermPreferencesBaseViewController *)vc {
+    [vc addViewToSearchIndex:_addTouchBarItem
+                 displayName:@"Add touch bar item"
+                     phrases:@[]
+                         key:nil];
+    [vc addViewToSearchIndex:_presetsPopup
+                 displayName:@"Key binding presets"
+                     phrases:@[]
+                         key:nil];
+    [vc addViewToSearchIndex:_touchBarMitigationsButton
+                 displayName:@"Touch bar mitigations"
+                     phrases:@[ @"Haptic feedback for esc key",
+                                @"Key click sound for esc key",
+                                @"Visual indicator for esc key" ]
+                         key:_touchBarMitigationsButton.accessibilityIdentifier];
 }
 
 #pragma mark - NSTableViewDataSource
@@ -120,8 +181,8 @@ static NSString *const iTermTouchBarIDPrefix = @"touchbar:";
 - (void)editActionWindowCompletionHandler:(iTermEditKeyActionWindowController *)editActionWindowController {
     if (editActionWindowController.ok) {
         [_delegate keyMapping:self
-                 didChangeKey:editActionWindowController.isTouchBarItem ? editActionWindowController.touchBarItemID : editActionWindowController.currentKeyCombination
-               isTouchBarItem:editActionWindowController.isTouchBarItem
+                 didChangeKey:editActionWindowController.identifier
+               isTouchBarItem:editActionWindowController.mode == iTermEditKeyActionWindowControllerModeTouchBarItem
                       atIndex:[_tableView selectedRow]
                      toAction:editActionWindowController.action
                     parameter:editActionWindowController.parameterValue
@@ -151,7 +212,7 @@ static NSString *const iTermTouchBarIDPrefix = @"touchbar:";
     iTermEditKeyActionWindowController *editActionWindowController;
     editActionWindowController = [[iTermEditKeyActionWindowController alloc] initWithContext:iTermVariablesSuggestionContextSession | iTermVariablesSuggestionContextApp];
     editActionWindowController.isNewMapping = YES;
-    editActionWindowController.isTouchBarItem = YES;
+    editActionWindowController.mode = iTermEditKeyActionWindowControllerModeTouchBarItem;
     editActionWindowController.touchBarItemID = [iTermTouchBarIDPrefix stringByAppendingString:[NSString uuid]];
     editActionWindowController.action = KEY_ACTION_IGNORE;
     [self presentEditActionSheet:editActionWindowController];
@@ -204,7 +265,6 @@ static NSString *const iTermTouchBarIDPrefix = @"touchbar:";
         dict = [_delegate keyMappingTouchBarItems];
     }
     _editActionWindowController = [[iTermEditKeyActionWindowController alloc] initWithContext:iTermVariablesSuggestionContextSession | iTermVariablesSuggestionContextApp];
-    _editActionWindowController.isTouchBarItem = isTouchBarItem;
     if (isTouchBarItem) {
         _editActionWindowController.label = [iTermKeyBindingMgr touchBarLabelForBinding:dict[selectedKey]];
     }
@@ -216,12 +276,36 @@ static NSString *const iTermTouchBarIDPrefix = @"touchbar:";
     }
     _editActionWindowController.parameterValue = dict[selectedKey][@"Text"];
     _editActionWindowController.action = [dict[selectedKey][@"Action"] intValue];
+    _editActionWindowController.mode = isTouchBarItem ? iTermEditKeyActionWindowControllerModeTouchBarItem : iTermEditKeyActionWindowControllerModeKeyboardShortcut;
     [self presentEditActionSheet:_editActionWindowController];
 }
 
 - (IBAction)loadPresets:(id)sender {
     [_delegate keyMapping:self loadPresetsNamed:[[sender selectedItem] title]];
     [_tableView reloadData];
+}
+
+- (IBAction)hapticFeedbackToggled:(id)sender {
+    [iTermPreferences setBool:_hapticFeedbackForEsc.state == NSOnState
+                       forKey:kPreferenceKeyEnableHapticFeedbackForEsc];
+}
+
+- (IBAction)soundForEscToggled:(id)sender {
+    [iTermPreferences setBool:_soundForEsc.state == NSOnState
+                       forKey:kPreferenceKeyEnableSoundForEsc];
+}
+
+- (IBAction)visualIndicatorForEscToggled:(id)sender {
+    [iTermPreferences setBool:_visualIndicatorForEsc.state == NSOnState
+                       forKey:kPreferenceKeyVisualIndicatorForEsc];
+}
+
+- (IBAction)showTouchBarMitigationsPanel:(id)sender {
+    [self.view.window beginSheet:_touchBarMitigationsPanel completionHandler:nil];
+}
+
+- (IBAction)dismissTouchBarMitigations:(id)sender {
+    [self.view.window endSheet:_touchBarMitigationsPanel];
 }
 
 @end

@@ -8,10 +8,12 @@
 #import "iTermCommandRunner.h"
 
 #import "DebugLogging.h"
+#import "iTermAdvancedSettingsModel.h"
 #import "NSArray+iTerm.h"
 
 @interface iTermCommandRunner()
 @property (atomic) BOOL running;
+@property (atomic) BOOL terminateAfterLaunch;
 @end
 
 @implementation iTermCommandRunner {
@@ -79,6 +81,21 @@
     return self;
 }
 
+- (NSString *)description {
+    return [NSString stringWithFormat:@"<%@: %p pid=%@>", self.class, self, @(_task.processIdentifier)];
+}
+
+- (void)loadPathForGit {
+    NSString *searchPath = [iTermAdvancedSettingsModel gitSearchPath];
+    if (searchPath.length) {
+        NSMutableDictionary *environment = [[[NSProcessInfo processInfo] environment] mutableCopy];
+        NSString *key = @"PATH";
+        NSString *existingPath = environment[key] ?: @"/usr/bin:/bin:/usr/sbin:/sbin";
+        environment[key] = [NSString stringWithFormat:@"%@:%@", searchPath, existingPath];
+        self.environment = [environment copy];
+    }
+}
+
 - (void)run {
     dispatch_async(_readingQueue, ^{
         [self runSynchronously];
@@ -103,13 +120,23 @@
 
 - (void)terminate {
     @try {
-        [_task terminate];
+        self.terminateAfterLaunch = YES;
+        int pid = _task.processIdentifier;
+        if (pid) {
+            int rc = kill(pid, SIGKILL);
+            DLog(@"kill -%@ %@ returned %@", @(SIGKILL), @(_task.processIdentifier), @(rc));
+        } else {
+            DLog(@"command runner %@ process ID is 0. Should terminate after launch.", self);
+        }
     } @catch (NSException *exception) {
         DLog(@"terminate threw %@", exception);
     }
 }
 
 - (BOOL)launchTask {
+    if (_environment) {
+        _task.environment = _environment;
+    }
     [_task setStandardInput:_inputPipe];
     [_task setStandardOutput:_pipe];
     [_task setStandardError:_pipe];
@@ -121,7 +148,10 @@
     DLog(@"runCommand: Launching %@", _task);
     @try {
         [_task launch];
+        DLog(@"Launched %@", self);
     } @catch (NSException *e) {
+        NSLog(@"Task failed with %@. launchPath=%@, pwd=%@, args=%@", e, _task.launchPath, _task.currentDirectoryPath, _task.arguments);
+        DLog(@"Task failed with %@. launchPath=%@, pwd=%@, args=%@", e, _task.launchPath, _task.currentDirectoryPath, _task.arguments);
         if (self.completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.completion(-1);
@@ -130,6 +160,10 @@
         return NO;
     }
     self.running = YES;
+    if (self.terminateAfterLaunch) {
+        DLog(@"terminate after launch %@", self);
+        [self terminate];
+    }
     return YES;
 }
 
@@ -165,13 +199,15 @@
     }
 
     while (inData.length) {
-        DLog(@"runCommand: Read %@", inData);
-        [self didReadData:inData];
-        if (!self.outputHandler) {
-            DLog(@"%@: %@", [task.arguments componentsJoinedByString:@" "],
-                 [[NSString alloc] initWithData:inData encoding:NSUTF8StringEncoding]);
+        @autoreleasepool {
+            DLog(@"runCommand: Read %@", inData);
+            [self didReadData:inData];
+            if (!self.outputHandler) {
+                DLog(@"%@: %@", [task.arguments componentsJoinedByString:@" "],
+                     [[NSString alloc] initWithData:inData encoding:NSUTF8StringEncoding]);
+            }
+            DLog(@"runCommand: Reading");
         }
-        DLog(@"runCommand: Reading");
         @try {
             inData = [readHandle availableData];
         } @catch (NSException *e) {
@@ -224,12 +260,23 @@
 
 - (void)didReadData:(NSData *)inData {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self->_output) {
-            self->_output = [NSMutableData data];
-        }
-        [self->_output appendData:inData];
+        [self saveData:inData];
     });
     [super didReadData:inData];
+}
+
+- (void)saveData:(NSData *)inData {
+    if (!_output) {
+        _output = [NSMutableData data];
+    }
+    if (_truncated) {
+        return;
+    }
+    [_output appendData:inData];
+    if (_maximumOutputSize && _output.length > _maximumOutputSize.unsignedIntegerValue) {
+        _output.length = _maximumOutputSize.unsignedIntegerValue;
+        _truncated = YES;
+    }
 }
 
 @end

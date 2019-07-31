@@ -12,6 +12,7 @@
 #import "iTermProfilePreferences.h"
 #import "iTermSemanticHistoryPrefsController.h"
 #import "iTermShellHistoryController.h"
+#import "iTermUserDefaults.h"
 #import "iTermWarning.h"
 #import "NSTextField+iTerm.h"
 #import "PointerPreferencesViewController.h"
@@ -41,7 +42,13 @@
     IBOutlet NSControl *_boundHostShellIntegrationWarning;
     IBOutlet NSControl *_boundHostHelp;
 
+    IBOutlet NSButton *_triggersButton;
+    IBOutlet NSButton *_smartSelectionButton;
+    IBOutlet NSView *_automaticProfileSwitchingView;
+    IBOutlet NSView *_semanticHistoryAction;
+
     IBOutlet NSTextField *_disabledTip;
+    IBOutlet NSButton *_enableAPSLogging;
 
     BOOL _addingBoundHost;  // Don't remove empty-named hosts while this is set
 }
@@ -60,6 +67,24 @@
                                              selector:@selector(updateSemanticHistoryDisabledLabel:)
                                                  name:kPointerPrefsSemanticHistoryEnabledChangedNotification
                                                object:nil];
+
+    [self addViewToSearchIndex:_triggersButton
+                   displayName:@"Triggers"
+                       phrases:@[ @"regular expression", @"regex" ]
+                           key:nil];
+    [self addViewToSearchIndex:_smartSelectionButton
+                   displayName:@"Smart selection"
+                       phrases:@[ @"regular expression", @"regex" ]
+                           key:nil];
+    [self addViewToSearchIndex:_automaticProfileSwitchingView
+                   displayName:@"Automatic profile switching rules"
+                       phrases:@[]
+                           key:nil];
+    [self addViewToSearchIndex:_semanticHistoryAction
+                   displayName:@"Semantic history"
+                       phrases:@[ @"cmd click", @"open file", @"open url" ]
+                           key:nil];
+    _enableAPSLogging.state = iTermUserDefaults.enableAutomaticProfileSwitchingLogging ? NSOnState : NSOffState;
 }
 
 - (NSArray *)keysForBulkCopy {
@@ -239,7 +264,7 @@
 - (id)tableView:(NSTableView *)aTableView
     objectValueForTableColumn:(NSTableColumn *)aTableColumn
             row:(NSInteger)rowIndex {
-    if (rowIndex < 0 || rowIndex > self.boundHosts.count) {
+    if (rowIndex < 0 || rowIndex >= self.boundHosts.count) {
         return nil;
     }
     return [[self boundHosts] objectAtIndex:rowIndex];
@@ -338,6 +363,12 @@
 - (void)updateSemanticHistoryDisabledLabel:(NSNotification *)notification {
     _disabledTip.hidden = [iTermPreferences boolForKey:kPreferenceKeyCmdClickOpensURLs];
     _semanticHistoryPrefController.enabled = _disabledTip.hidden;
+}
+
+#pragma mark - Actions
+
+- (IBAction)didToggleAutomaticProfileSwitchingDebugLogging:(id)sender {
+    iTermUserDefaults.enableAutomaticProfileSwitchingLogging = (_enableAPSLogging.state == NSOnState);
 }
 
 @end

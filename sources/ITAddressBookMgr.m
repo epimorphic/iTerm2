@@ -29,6 +29,7 @@
 
 #import "DebugLogging.h"
 #import "iTermDynamicProfileManager.h"
+#import "iTermExpressionEvaluator.h"
 #import "iTermHotKeyController.h"
 #import "iTermKeyBindingMgr.h"
 #import "iTermHotKeyMigrationHelper.h"
@@ -48,6 +49,51 @@ NSString *const iTermUnicodeVersionDidChangeNotification = @"iTermUnicodeVersion
 const NSTimeInterval kMinimumAntiIdlePeriod = 1.0;
 
 static NSMutableArray<NSNotification *> *sDelayedNotifications;
+
+iTermWindowType iTermWindowDefaultType(void) {
+    return iTermThemedWindowType(WINDOW_TYPE_NORMAL);
+}
+
+iTermWindowType iTermThemedWindowType(iTermWindowType windowType) {
+    switch (windowType) {
+        case WINDOW_TYPE_COMPACT:
+        case WINDOW_TYPE_NORMAL:
+            if (@available(macOS 10.14, *)) {} else {
+                // 10.13 and earlier do not support compact
+                return WINDOW_TYPE_NORMAL;
+            }
+            switch ((iTermPreferencesTabStyle)[iTermPreferences intForKey:kPreferenceKeyTabStyle]) {
+                case TAB_STYLE_COMPACT:
+                case TAB_STYLE_MINIMAL:
+                    return WINDOW_TYPE_COMPACT;
+
+                case TAB_STYLE_AUTOMATIC:
+                case TAB_STYLE_LIGHT:
+                case TAB_STYLE_DARK:
+                case TAB_STYLE_LIGHT_HIGH_CONTRAST:
+                case TAB_STYLE_DARK_HIGH_CONTRAST:
+                    return WINDOW_TYPE_NORMAL;
+            }
+            assert(false);
+            return windowType;
+
+        case WINDOW_TYPE_TOP:
+        case WINDOW_TYPE_LEFT:
+        case WINDOW_TYPE_RIGHT:
+        case WINDOW_TYPE_BOTTOM:
+        case WINDOW_TYPE_ACCESSORY:
+        case WINDOW_TYPE_TRADITIONAL_FULL_SCREEN:
+        case WINDOW_TYPE_LION_FULL_SCREEN:
+        case WINDOW_TYPE_TOP_PARTIAL:
+        case WINDOW_TYPE_LEFT_PARTIAL:
+        case WINDOW_TYPE_BOTTOM_PARTIAL:
+        case WINDOW_TYPE_RIGHT_PARTIAL:
+        case WINDOW_TYPE_NO_TITLE_BAR:
+            return windowType;
+    }
+    ITAssertWithMessage(NO, @"Unknown window type %@", @(windowType));
+    return WINDOW_TYPE_NORMAL;
+}
 
 @implementation ITAddressBookMgr {
     NSNetServiceBrowser *sshBonjourBrowser;
@@ -85,7 +131,7 @@ static NSMutableArray<NSNotification *> *sDelayedNotifications;
 
         // Load new-style bookmarks.
         id newBookmarks = [prefs objectForKey:KEY_NEW_BOOKMARKS];
-        NSString *originalDefaultGuid = [[[prefs objectForKey:KEY_DEFAULT_GUID] copy] autorelease];
+        NSString *originalDefaultGuid = [[prefs objectForKey:KEY_DEFAULT_GUID] copy];
         if ([newBookmarks isKindOfClass:[NSArray class]]) {
             [self setBookmarks:newBookmarks
                    defaultGuid:[prefs objectForKey:KEY_DEFAULT_GUID]];
@@ -113,11 +159,10 @@ static NSMutableArray<NSNotification *> *sDelayedNotifications;
 
         // Make sure there is at least one bookmark.
         if ([[ProfileModel sharedInstance] numberOfBookmarks] == 0) {
-            NSMutableDictionary* aDict = [[NSMutableDictionary alloc] init];
+            NSMutableDictionary *aDict = [[NSMutableDictionary alloc] init];
             [ITAddressBookMgr setDefaultsInBookmark:aDict];
             [[ProfileModel sharedInstance] addBookmark:aDict];
             [[ProfileModel sharedInstance] flush];
-            [aDict release];
         }
 
         if ([iTermPreferences boolForKey:kPreferenceKeyAddBonjourHostsToProfiles]) {
@@ -152,15 +197,10 @@ static NSMutableArray<NSNotification *> *sDelayedNotifications;
 
 - (void)dealloc {
     [bonjourServices removeAllObjects];
-    [bonjourServices release];
 
     [sshBonjourBrowser stop];
     [ftpBonjourBrowser stop];
     [telnetBonjourBrowser stop];
-    [sshBonjourBrowser release];
-    [ftpBonjourBrowser release];
-    [telnetBonjourBrowser release];
-    [super dealloc];
 }
 
 - (void)removeBonjourProfiles {
@@ -197,18 +237,14 @@ static NSMutableArray<NSNotification *> *sDelayedNotifications;
 
 - (void)stopLocatingBonjourServices {
     [sshBonjourBrowser stop];
-    [sshBonjourBrowser release];
     sshBonjourBrowser = nil;
 
     [ftpBonjourBrowser stop];
-    [ftpBonjourBrowser release];
     ftpBonjourBrowser = nil;
 
     [telnetBonjourBrowser stop];
-    [telnetBonjourBrowser release];
     telnetBonjourBrowser = nil;
 
-    [bonjourServices release];
     bonjourServices = nil;
 }
 
@@ -271,7 +307,7 @@ static NSMutableArray<NSNotification *> *sDelayedNotifications;
     }
 
     // remove host entry from this group
-    NSMutableArray* toRemove = [[[NSMutableArray alloc] init] autorelease];
+    NSMutableArray *toRemove = [[NSMutableArray alloc] init];
 #ifdef SUPPORT_SFTP
     NSString* sftpName = [NSString stringWithFormat:@"%@-sftp", [aNetService name]];
 #endif
@@ -558,34 +594,6 @@ static NSMutableArray<NSNotification *> *sDelayedNotifications;
     }
 }
 
-+ (NSString*)bookmarkWorkingDirectory:(Profile*)bookmark forObjectType:(iTermObjectType)objectType
-{
-    NSString* custom = [bookmark objectForKey:KEY_CUSTOM_DIRECTORY];
-    if ([custom isEqualToString:kProfilePreferenceInitialDirectoryCustomValue]) {
-        return [bookmark objectForKey:KEY_WORKING_DIRECTORY];
-    } else if ([custom isEqualToString:kProfilePreferenceInitialDirectoryRecycleValue]) {
-        return @"";
-    } else if ([custom isEqualToString:kProfilePreferenceInitialDirectoryAdvancedValue]) {
-        switch (objectType) {
-          case iTermWindowObject:
-              return [ITAddressBookMgr _advancedWorkingDirWithOption:[bookmark objectForKey:KEY_AWDS_WIN_OPTION]
-                                                           directory:[bookmark objectForKey:KEY_AWDS_WIN_DIRECTORY]];
-          case iTermTabObject:
-              return [ITAddressBookMgr _advancedWorkingDirWithOption:[bookmark objectForKey:KEY_AWDS_TAB_OPTION]
-                                                           directory:[bookmark objectForKey:KEY_AWDS_TAB_DIRECTORY]];
-          case iTermPaneObject:
-              return [ITAddressBookMgr _advancedWorkingDirWithOption:[bookmark objectForKey:KEY_AWDS_PANE_OPTION]
-                                                           directory:[bookmark objectForKey:KEY_AWDS_PANE_DIRECTORY]];
-          default:
-              NSLog(@"Bogus object type %d", (int)objectType);
-              return NSHomeDirectory();  // Shouldn't happen
-        }
-    } else {
-        // Home dir, custom == "No"
-        return NSHomeDirectory();
-    }
-}
-
 + (BOOL)canRemoveProfile:(NSDictionary *)profile fromModel:(ProfileModel *)model {
     DLog(@"removeProfile called");
     if (!profile) {
@@ -676,7 +684,6 @@ static NSMutableArray<NSNotification *> *sDelayedNotifications;
         for (NSNotification *notification in sDelayedNotifications) {
             [[NSNotificationCenter defaultCenter] postNotification:notification];
         }
-        [sDelayedNotifications release];
         sDelayedNotifications = nil;
     } else {
         block();

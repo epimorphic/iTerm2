@@ -7,7 +7,7 @@
 
 #import <Foundation/Foundation.h>
 
-extern NSString *const iTermScriptSetupPyName;
+extern NSString *const iTermScriptSetupCfgName;
 
 // Helps install archived scripts.
 @interface iTermScriptArchive : NSObject
@@ -16,7 +16,13 @@ extern NSString *const iTermScriptSetupPyName;
 @property (nonatomic, readonly) BOOL fullEnvironment;
 @property (nonatomic, readonly) NSDictionary *metadata;
 
-+ (instancetype)archiveFromContainer:(NSString *)container;
-- (void)installTrusted:(BOOL)trusted withCompletion:(void (^)(NSError *, NSURL *location))completion;
++ (instancetype)archiveFromContainer:(NSString *)container
+                          deprecated:(out BOOL *)deprecatedPtr;
+
+// Trusted scripts may specify that they prefer to be in autolaunch and user will be prompted.
+// If offerAutoLaunch is set, then even non-trusted scripts will prompt to move to autolaunch.
+- (void)installTrusted:(BOOL)trusted
+       offerAutoLaunch:(BOOL)offerAutoLaunch
+        withCompletion:(void (^)(NSError *, NSURL *location))completion;
 
 @end

@@ -8,12 +8,16 @@
 
 #import "ProfilesSessionPreferencesViewController.h"
 #import "ITAddressBookMgr.h"
+#import "iTermColorMap.h"
 #import "iTermStatusBarSetupViewController.h"
+#import "iTermTheme.h"
 #import "iTermWarning.h"
 #import "NSColor+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSFileManager+iTerm.h"
+#import "NSImage+iTerm.h"
 #import "NSObject+iTerm.h"
+#import "PSMMinimalTabStyle.h"
 #import "PreferencePanel.h"
 
 @interface iTermStatusBarSetupPanel : NSPanel
@@ -36,11 +40,11 @@
 
 @end
 
-@interface ProfilesSessionPreferencesViewController () <NSTableViewDelegate, NSTableViewDataSource>
+@interface ProfilesSessionPreferencesViewController () <NSTableViewDelegate, NSTableViewDataSource, PSMMinimalTabStyleDelegate>
 @end
 
 @implementation ProfilesSessionPreferencesViewController {
-    IBOutlet NSButton *_closeSessionsOnEnd;
+    IBOutlet NSPopUpButton *_onEndAction;
     IBOutlet NSTableView *_jobsTable;
     IBOutlet NSButton *_removeJob;
     IBOutlet NSButton *_autoLog;
@@ -82,35 +86,56 @@
                                                  name:kReloadAllProfiles
                                                object:nil];
     __weak __typeof(self) weakSelf = self;
-    [self defineControl:_closeSessionsOnEnd
-                    key:KEY_CLOSE_SESSIONS_ON_END
-                   type:kPreferenceInfoTypeCheckbox];
+    PreferenceInfo *info;
+    info = [self defineControl:_onEndAction
+                           key:KEY_SESSION_END_ACTION
+                   displayName:@"Close or restart session on end"
+                          type:kPreferenceInfoTypePopup];
+    info.customSettingChangedHandler = ^(id sender) {
+        [weakSelf onEndSettingDidChange];
+    };
 
     [self defineControl:_alwaysWarn
                     key:KEY_PROMPT_CLOSE
+            relatedView:nil
+            displayName:nil
                    type:kPreferenceInfoTypeRadioButton
          settingChanged:^(id sender) { [self promptBeforeClosingDidChange]; }
-                 update:^BOOL { [self updatePromptBeforeClosing]; return YES; }];
+                 update:^BOOL { [self updatePromptBeforeClosing]; return YES; }
+             searchable:NO];
 
     [self defineControl:_neverWarn
                     key:KEY_PROMPT_CLOSE
+            relatedView:nil
+            displayName:nil
                    type:kPreferenceInfoTypeRadioButton
          settingChanged:^(id sender) { [self promptBeforeClosingDidChange]; }
-                 update:^BOOL { [self updatePromptBeforeClosing]; return YES; }];
+                 update:^BOOL { [self updatePromptBeforeClosing]; return YES; }
+             searchable:NO];
 
     [self defineControl:_warnIfJobsBesides
                     key:KEY_PROMPT_CLOSE
+            relatedView:nil
+            displayName:nil
                    type:kPreferenceInfoTypeRadioButton
          settingChanged:^(id sender) { [self promptBeforeClosingDidChange]; }
-                 update:^BOOL { [self updatePromptBeforeClosing]; return YES; }];
-
+                 update:^BOOL { [self updatePromptBeforeClosing]; return YES; }
+             searchable:NO];
+    
+    [self addViewToSearchIndex:_warnContainer
+                   displayName:@"Prompt before closing profile"
+                       phrases:@[ @"Always prompt before closing profile",
+                                  @"Never prompt before closing profile",
+                                  @"Prompt before closing profile if running jobs"]
+                           key:nil];
     [self defineControl:_undoTimeout
                     key:KEY_UNDO_TIMEOUT
+            displayName:@"Undo close session timeout"
                    type:kPreferenceInfoTypeIntegerTextField];
 
-    PreferenceInfo *info;
     info = [self defineControl:_autoLog
                            key:KEY_AUTOLOG
+                   displayName:@"Directory to automatically log sessions to"
                           type:kPreferenceInfoTypeCheckbox];
     info.observer = ^() {
         __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -122,13 +147,14 @@
         [strongSelf updateLogDirWarning];
     };
 
-    info = [self defineControl:_logDir
-                           key:KEY_LOGDIR
-                          type:kPreferenceInfoTypeStringTextField];
+    info = [self defineUnsearchableControl:_logDir
+                                       key:KEY_LOGDIR
+                                      type:kPreferenceInfoTypeStringTextField];
     info.observer = ^() { [weakSelf updateLogDirWarning]; };
 
     info = [self defineControl:_sendCodeWhenIdle
                            key:KEY_SEND_CODE_WHEN_IDLE
+                   displayName:@"Send ASCII code when idle?"
                           type:kPreferenceInfoTypeCheckbox];
     info.customSettingChangedHandler = ^(id sender) {
         __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -173,21 +199,25 @@
 
     info = [self defineControl:_idleCode
                            key:KEY_IDLE_CODE
+                   displayName:@"Send character periodically while idle"
                           type:kPreferenceInfoTypeIntegerTextField];
     info.range = NSMakeRange(0, 256);
 
     [self defineControl:_idlePeriod
                     key:KEY_IDLE_PERIOD
+            displayName:@"Time between sending charactesr when idle"
                    type:kPreferenceInfoTypeDoubleTextField];
 
     [self updateRemoveJobButtonEnabled];
 
     [self defineControl:_reduceFlicker
                     key:KEY_REDUCE_FLICKER
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     info = [self defineControl:_statusBarEnabled
                            key:KEY_SHOW_STATUS_BAR
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.observer = ^{
         __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -198,6 +228,15 @@
                                                    [strongSelf boolForKey:KEY_SHOW_STATUS_BAR]);
     };
     info.onChange = ^() { [weakSelf postRefreshNotification]; };
+
+    [self addViewToSearchIndex:_configureStatusBar
+                   displayName:@"Configure status bar"
+                       phrases:@[]
+                           key:nil];
+}
+
+- (void)onEndSettingDidChange {
+    [self setUnsignedInteger:_onEndAction.selectedTag forKey:KEY_SESSION_END_ACTION];
 }
 
 // Ensure the anti-idle period's value is constrained to the legal range.
@@ -235,17 +274,60 @@
 }
 
 - (NSArray *)keysForBulkCopy {
-    NSArray *keys = @[ KEY_JOBS ];
+    NSArray *keys = @[ KEY_JOBS, KEY_STATUS_BAR_LAYOUT ];
     return [[super keysForBulkCopy] arrayByAddingObjectsFromArray:keys];
 }
 
 - (BOOL)allowRainbow {
-    if (@available(macOS 10.14, *)) {
-        const iTermPreferencesTabStyle preferredStyle = [iTermPreferences intForKey:kPreferenceKeyTabStyle];
-        const iTermWindowType windowType = [self intForKey:KEY_WINDOW_TYPE];
-        return (preferredStyle == TAB_STYLE_MINIMAL && windowType == WINDOW_TYPE_COMPACT);
-    } else {
-        return NO;
+    // I was going to make this an easter egg but it was revealed by the Whats New screenshot.
+    return YES;
+}
+
+- (iTermColorMap *)colorMap {
+    iTermColorMap *colorMap = [[iTermColorMap alloc] init];
+    colorMap.mutingAmount = [self floatForKey:KEY_CURSOR_BOOST];
+    colorMap.dimOnlyText = [iTermPreferences boolForKey:kPreferenceKeyDimOnlyText];
+    colorMap.minimumContrast = [self floatForKey:KEY_MINIMUM_CONTRAST];
+    return colorMap;
+}
+
+- (id<PSMTabStyle>)tabStyle {
+    return [[iTermTheme sharedInstance] tabStyleWithDelegate:self
+                                         effectiveAppearance:self.view.window.effectiveAppearance];
+}
+
+- (NSColor *)sessionBackgroundColor {
+    NSDictionary *dict = [NSDictionary castFrom:[self objectForKey:KEY_BACKGROUND_COLOR]];
+    if (!dict) {
+        return [NSColor colorWithRed:0 green:0 blue:0 alpha:1];
+    }
+    return [dict colorValue];
+}
+
+- (NSColor *)tabColor {
+    if (![self boolForKey:KEY_USE_TAB_COLOR]) {
+        return nil;
+    }
+    NSDictionary *dict = [NSDictionary castFrom:[self objectForKey:KEY_TAB_COLOR]];
+    if (!dict) {
+        return nil;
+    }
+    return [dict colorValue];
+}
+
+- (NSAppearance *)appearanceForCurrentTheme {
+    const iTermPreferencesTabStyle preferredStyle = [iTermPreferences intForKey:kPreferenceKeyTabStyle];
+    switch (preferredStyle) {
+        case TAB_STYLE_DARK:
+        case TAB_STYLE_DARK_HIGH_CONTRAST:
+            return [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
+        case TAB_STYLE_LIGHT:
+        case TAB_STYLE_LIGHT_HIGH_CONTRAST:
+            return [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+        case TAB_STYLE_AUTOMATIC:
+        case TAB_STYLE_COMPACT:
+        case TAB_STYLE_MINIMAL:
+            return self.view.effectiveAppearance;
     }
 }
 
@@ -257,6 +339,17 @@
         [[iTermStatusBarSetupViewController alloc] initWithLayoutDictionary:layoutDictionary
                                                              darkBackground:dark
                                                                allowRainbow:[self allowRainbow]];
+    _statusBarSetupViewController.defaultTextColor = [[iTermTheme sharedInstance] statusBarTextColorForEffectiveAppearance:[self appearanceForCurrentTheme]
+                                                                                                                  colorMap:[self colorMap]
+                                                                                                                  tabStyle:[self tabStyle]
+                                                                                                             mainAndActive:YES];
+    _statusBarSetupViewController.defaultBackgroundColor = [[iTermTheme sharedInstance] statusBarContainerBackgroundColorForTabColor:[self tabColor]
+                                                                                                                 effectiveAppearance:[self appearanceForCurrentTheme]
+                                                                                                                            tabStyle:[self tabStyle]
+                                                                                                              sessionBackgroundColor:[self sessionBackgroundColor]
+                                                                                                                    isFirstResponder:YES
+                                                                                                                         dimOnlyText:[self boolForKey:kPreferenceKeyDimOnlyText]
+                                                                                                               adjustedDimmingAmount:0];
 
     _statusBarSetupWindow =
         [[iTermStatusBarSetupPanel alloc] initWithContentRect:_statusBarSetupViewController.view.frame
@@ -418,11 +511,26 @@
 }
 
 - (void)updateLogDirWarning {
-    [_logDirWarning setHidden:[_autoLog state] == NSOffState || [self logDirIsWritable]];
+    if ([_autoLog state] == NSOffState) {
+        _logDirWarning.hidden = YES;
+        return;
+    }
+    _logDirWarning.hidden = NO;
+    if ([self logDirIsWritable]) {
+        _logDirWarning.image = [NSImage it_imageNamed:@"CheckMark" forClass:self.class];
+    } else {
+        _logDirWarning.image = [NSImage it_imageNamed:@"WarningSign" forClass:self.class];
+    }
 }
 
 - (BOOL)logDirIsWritable {
     return [[NSFileManager defaultManager] directoryIsWritable:[_logDir stringValue]];
+}
+
+#pragma mark - PSMMinimalTabStyleDelegate
+
+- (NSColor *)minimalTabStyleBackgroundColor {
+    return [self sessionBackgroundColor];
 }
 
 @end

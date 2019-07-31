@@ -7,9 +7,11 @@
 
 #import "iTermVariableScope.h"
 
+#import "iTermObject.h"
 #import "iTermTuple.h"
 #import "iTermVariableReference.h"
 #import "iTermVariables.h"
+#import "iTermVariables+Private.h"
 #import "NSArray+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSObject+iTerm.h"
@@ -54,18 +56,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-@interface iTermVariables(Private)
-- (NSDictionary<NSString *,NSString *> *)stringValuedDictionaryInScope:(nullable NSString *)scopeName;
-- (nullable id)valueForVariableName:(NSString *)name;
-- (NSString *)stringValueForVariableName:(NSString *)name;
-- (BOOL)hasLinkToReference:(iTermVariableReference *)reference
-                      path:(NSString *)path;
-- (BOOL)setValuesFromDictionary:(NSDictionary<NSString *, id> *)dict;
-- (BOOL)setValue:(nullable id)value forVariableNamed:(NSString *)name weak:(BOOL)weak;
-- (void)addLinkToReference:(iTermVariableReference *)reference
-                      path:(NSString *)path;
-@end
-
 @implementation iTermVariableScope {
     NSMutableArray<iTermTuple<NSString *, iTermVariables *> *> *_frames;
     // References to paths without an owner. This normally only happens when a session is being
@@ -80,6 +70,10 @@ NS_ASSUME_NONNULL_BEGIN
         _danglingReferences = [NSPointerArray weakObjectsPointerArray];
     }
     return self;
+}
+
+- (BOOL)usePlaceholders {
+    return NO;
 }
 
 - (void)addVariables:(iTermVariables *)variables toScopeNamed:(nullable NSString *)scopeName {
@@ -268,6 +262,16 @@ NS_ASSUME_NONNULL_BEGIN
     return result;
 }
 
+// This is useful for debug logging
+- (NSString *)owner {
+    for (iTermTuple<NSString *, iTermVariables *> *tuple in _frames) {
+        if (tuple.firstObject == nil) {
+            return [[tuple.secondObject owner] description];
+        }
+    }
+    return @"(unknown)";
+}
+
 - (void)resolveDanglingReferences {
     NSPointerArray *refs = _danglingReferences;
     if (refs.count == 0) {
@@ -285,7 +289,7 @@ NS_ASSUME_NONNULL_BEGIN
     }
 }
 
-- (void)addLinksToReference:(iTermVariableReference *)reference {
+- (void)addLinksToReference:(id<iTermVariableReference>)reference {
     NSString *tail;
     iTermVariables *variables = [self ownerForKey:reference.path forWriting:YES stripped:&tail];
     if (!variables) {
@@ -356,9 +360,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (NSArray<iTermVariableReference *> *)recordedReferences {
     return [_names.allObjects mapWithBlock:^id(NSString *path) {
-        return [[iTermVariableReference alloc] initWithPath:path scope:self->_scope];
+        return [[iTermVariableReference alloc] initWithPath:path vendor:self->_scope];
     }];
 }
+@end
+
+@implementation iTermVariablePlaceholderScope
+
+- (BOOL)usePlaceholders {
+    return YES;
+}
+
 @end
 
 NS_ASSUME_NONNULL_END

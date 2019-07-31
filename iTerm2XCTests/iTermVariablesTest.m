@@ -6,10 +6,11 @@
 //
 
 #import <XCTest/XCTest.h>
+#import "iTermObject.h"
 #import "iTermVariableReference.h"
 #import "iTermVariableScope.h"
 
-@interface iTermVariablesTest : XCTestCase
+@interface iTermVariablesTest : XCTestCase<iTermObject>
 
 @end
 
@@ -31,7 +32,7 @@
 
     __block id actual = nil;
     iTermVariableReference *ref = [[[iTermVariableReference alloc] initWithPath:@"v"
-                                                                          scope:scope] autorelease];
+                                                                         vendor:scope] autorelease];
     ref.onChangeBlock = ^{
         actual = ref.value;
     };
@@ -47,7 +48,7 @@
     [scope setValue:@123 forVariableNamed:@"v"];
 
     iTermVariableReference *ref = [[[iTermVariableReference alloc] initWithPath:@"v"
-                                                                          scope:scope] autorelease];
+                                                                         vendor:scope] autorelease];
     ref.value = @987;
     id actual = [scope valueForVariableName:@"v"];
     XCTAssertEqualObjects(@987, actual);
@@ -59,7 +60,7 @@
     [scope addVariables:vars toScopeNamed:nil];
 
     iTermVariableReference *ref = [[[iTermVariableReference alloc] initWithPath:@"v"
-                                                                          scope:scope] autorelease];
+                                                                         vendor:scope] autorelease];
     __block id actual = nil;
     ref.onChangeBlock = ^{
         actual = ref.value;
@@ -87,7 +88,7 @@
     [session2Scope setValue:@2 forVariableNamed:@"n"];
 
     iTermVariableReference *ref = [[[iTermVariableReference alloc] initWithPath:@"currentSession.n"
-                                                                          scope:tabScope] autorelease];
+                                                                         vendor:tabScope] autorelease];
     __block id actual = nil;
     ref.onChangeBlock = ^{
         [actual autorelease];
@@ -111,7 +112,7 @@
     [session1Scope setValue:@123 forVariableNamed:@"n"];
 
     iTermVariableReference *ref = [[[iTermVariableReference alloc] initWithPath:@"currentSession.n"
-                                                                          scope:tabScope] autorelease];
+                                                                         vendor:tabScope] autorelease];
     __block id actual = nil;
     ref.onChangeBlock = ^{
         [actual autorelease];
@@ -137,6 +138,16 @@
     
     XCTAssertEqualObjects(@234, [scope2 valueForVariableName:@"v"]);
     XCTAssertEqualObjects(@234, [vars2 discouragedValueForVariableName:@"v"]);
+}
+
+#pragma mark - iTermObject
+
+- (iTermBuiltInFunctions *)objectMethodRegistry {
+    return nil;
+}
+
+- (iTermVariableScope *)objectScope {
+    return nil;
 }
 
 @end

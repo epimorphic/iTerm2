@@ -15,6 +15,7 @@
 @property (nonatomic, readonly) NSString *connectionKey;
 
 - (void)performFunctionCallFromInvocation:(NSString *)invocation
+                                 receiver:(NSString *)receiver
                                     scope:(iTermVariableScope *)scope
                                   timeout:(NSTimeInterval)timeout
                                completion:(void (^)(id, NSError *, NSSet<NSString *> *))completion;

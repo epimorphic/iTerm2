@@ -6,6 +6,7 @@
 //
 
 #import "iTermFocusReportingTextField.h"
+#import "PTYWindow.h"
 
 @implementation iTermFocusReportingTextField
 
@@ -16,6 +17,32 @@
     if (result &&
         [self.delegate respondsToSelector:@selector(focusReportingTextFieldWillBecomeFirstResponder:)]) {
         [self.delegate focusReportingTextFieldWillBecomeFirstResponder:self];
+    }
+    return result;
+}
+
+@end
+
+@implementation iTermFocusReportingSearchField
+
+@dynamic delegate;
+
+- (BOOL)enclosingTerminalWindowIsBecomingKey {
+    id<PTYWindow> window = (id<PTYWindow>)self.window;
+    if (![window conformsToProtocol:@protocol(PTYWindow)]) {
+        return NO;
+    }
+    return window.it_becomingKey;
+}
+
+- (BOOL)becomeFirstResponder {
+    BOOL result = [super becomeFirstResponder];
+    if ([self enclosingTerminalWindowIsBecomingKey]) {
+        return NO;
+    }
+    if (result &&
+        [self.delegate respondsToSelector:@selector(focusReportingSearchFieldWillBecomeFirstResponder:)]) {
+        [self.delegate focusReportingSearchFieldWillBecomeFirstResponder:self];
     }
     return result;
 }

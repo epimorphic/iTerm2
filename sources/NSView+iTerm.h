@@ -37,5 +37,8 @@
 
 - (void)enumerateHierarchy:(void (NS_NOESCAPE ^)(NSView *))block;
 - (CGFloat)retinaRound:(CGFloat)value;
+- (CGFloat)retinaRoundUp:(CGFloat)value;
+- (CGRect)retinaRoundRect:(CGRect)rect;
+- (BOOL)containsDescendant:(NSView *)possibleDescendant;
 
 @end

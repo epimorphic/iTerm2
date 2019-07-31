@@ -22,19 +22,6 @@
 #import "WindowArrangements.h"
 #import "NSImage+iTerm.h"
 
-@interface iTermCustomFolderTextFieldCell : NSTextFieldCell
-@end
-
-@implementation iTermCustomFolderTextFieldCell
-
-- (NSRect)drawingRectForBounds:(NSRect)theRect {
-    NSRect rect = [super drawingRectForBounds:theRect];
-    rect.size.width -= 23;  // Width of warning icon
-    return rect;
-}
-
-@end
-
 enum {
     kUseSystemWindowRestorationSettingTag = 0,
     kOpenDefaultWindowArrangementTag = 1,
@@ -44,9 +31,12 @@ enum {
 @implementation GeneralPreferencesViewController {
     // open bookmarks when iterm starts
     IBOutlet NSButton *_openBookmark;
+    IBOutlet NSButton *_advancedGPUPrefsButton;
 
     // Open saved window arrangement at startup
     IBOutlet NSPopUpButton *_openWindowsAtStartup;
+    IBOutlet NSTextField *_openWindowsAtStartupLabel;
+
     IBOutlet NSMenuItem *_openDefaultWindowArrangementItem;
 
     // Quit when all windows are closed
@@ -60,6 +50,7 @@ enum {
 
     // Instant replay memory usage.
     IBOutlet NSTextField *_irMemory;
+    IBOutlet NSTextField *_irMemoryLabel;
 
     // Save copy paste history
     IBOutlet NSButton *_savePasteHistory;
@@ -83,7 +74,6 @@ enum {
 
     // Load prefs from custom folder
     IBOutlet NSButton *_loadPrefsFromCustomFolder;  // Should load?
-    IBOutlet iTermCustomFolderTextFieldCell *_customFolderTextFieldCell;
     IBOutlet NSTextField *_prefsCustomFolder;  // Path or URL text field
     IBOutlet NSImageView *_prefsDirWarning;  // Image shown when path is not writable
     IBOutlet NSButton *_browseCustomFolder;  // Push button to open file browser
@@ -101,6 +91,7 @@ enum {
 
     // Characters considered part of word
     IBOutlet NSTextField *_wordChars;
+    IBOutlet NSTextField *_wordCharsLabel;
 
     // Smart window placement
     IBOutlet NSButton *_smartPlacement;
@@ -116,6 +107,7 @@ enum {
 
     // Open tmux windows in [windows, tabs]
     IBOutlet NSPopUpButton *_openTmuxWindows;
+    IBOutlet NSTextField *_openTmuxWindowsLabel;
 
     // Hide the tmux client session
     IBOutlet NSButton *_autoHideTmuxClientSession;
@@ -145,10 +137,12 @@ enum {
     __weak __typeof(self) weakSelf = self;
     [self defineControl:_openBookmark
                     key:kPreferenceKeyOpenBookmark
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_openWindowsAtStartup
                     key:kPreferenceKeyOpenArrangementAtStartup
+            relatedView:_openWindowsAtStartupLabel
                    type:kPreferenceInfoTypeCheckbox
          settingChanged:^(id sender) {
              __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -189,23 +183,28 @@ enum {
     [_openDefaultWindowArrangementItem setEnabled:[WindowArrangements count] > 0];
     [self defineControl:_quitWhenAllWindowsClosed
                     key:kPreferenceKeyQuitWhenAllWindowsClosed
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_confirmClosingMultipleSessions
                     key:kPreferenceKeyConfirmClosingMultipleTabs
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_promptOnQuit
                     key:kPreferenceKeyPromptOnQuit
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     info = [self defineControl:_irMemory
                            key:kPreferenceKeyInstantReplayMemoryMegabytes
+                   displayName:@"Instant Replay memory usage limit"
                           type:kPreferenceInfoTypeIntegerTextField];
     info.range = NSMakeRange(0, 1000);
 
     info = [self defineControl:_savePasteHistory
                            key:kPreferenceKeySavePasteAndCommandHistory
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.onChange = ^() {
         [[iTermShellHistoryController sharedInstance] backingStoreTypeDidChange];
@@ -214,6 +213,7 @@ enum {
     if (@available(macOS 10.12, *)) {
         info = [self defineControl:_gpuRendering
                                key:kPreferenceKeyUseMetal
+                       relatedView:nil
                               type:kPreferenceInfoTypeCheckbox];
         info.observer = ^{
             [weakSelf updateAdvancedGPUEnabled];
@@ -226,6 +226,7 @@ enum {
 
     info = [self defineControl:_enableAPI
                            key:kPreferenceKeyEnableAPIServer
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.customSettingChangedHandler = ^(id sender) {
         [weakSelf enableAPISettingDidChange];
@@ -246,18 +247,18 @@ enum {
     [_advancedGPUWindowController window];
     _advancedGPUWindowController.viewController.disableWhenDisconnected.target = self;
     _advancedGPUWindowController.viewController.disableWhenDisconnected.action = @selector(settingChanged:);
-    info = [self defineControl:_advancedGPUWindowController.viewController.disableWhenDisconnected
-                           key:kPreferenceKeyDisableMetalWhenUnplugged
-                          type:kPreferenceInfoTypeCheckbox];
+    info = [self defineUnsearchableControl:_advancedGPUWindowController.viewController.disableWhenDisconnected
+                                       key:kPreferenceKeyDisableMetalWhenUnplugged
+                                      type:kPreferenceInfoTypeCheckbox];
     info.observer = ^{
         [[NSNotificationCenter defaultCenter] postNotificationName:iTermMetalSettingsDidChangeNotification object:nil];
     };
 
     _advancedGPUWindowController.viewController.preferIntegratedGPU.target = self;
     _advancedGPUWindowController.viewController.preferIntegratedGPU.action = @selector(settingChanged:);
-    info = [self defineControl:_advancedGPUWindowController.viewController.preferIntegratedGPU
-                           key:kPreferenceKeyPreferIntegratedGPU
-                          type:kPreferenceInfoTypeCheckbox];
+    info = [self defineUnsearchableControl:_advancedGPUWindowController.viewController.preferIntegratedGPU
+                                       key:kPreferenceKeyPreferIntegratedGPU
+                                      type:kPreferenceInfoTypeCheckbox];
     info.observer = ^{
         [[NSNotificationCenter defaultCenter] postNotificationName:iTermMetalSettingsDidChangeNotification object:nil];
     };
@@ -273,34 +274,46 @@ enum {
     _advancedGPUWindowController.viewController.maximizeThroughput.target = self;
     _advancedGPUWindowController.viewController.maximizeThroughput.action = @selector(settingChanged:);
 
-    info = [self defineControl:_advancedGPUWindowController.viewController.maximizeThroughput
-                           key:kPreferenceKeyMetalMaximizeThroughput
-                          type:kPreferenceInfoTypeCheckbox];
+    info = [self defineUnsearchableControl:_advancedGPUWindowController.viewController.maximizeThroughput
+                                       key:kPreferenceKeyMetalMaximizeThroughput
+                                      type:kPreferenceInfoTypeCheckbox];
     info.observer = ^{
         [[NSNotificationCenter defaultCenter] postNotificationName:iTermMetalSettingsDidChangeNotification object:nil];
     };
 
+    [self addViewToSearchIndex:_advancedGPUPrefsButton
+                   displayName:@"Advanced GPU settings"
+                       phrases:@[ _advancedGPUWindowController.viewController.disableWhenDisconnected.title,
+                                  _advancedGPUWindowController.viewController.preferIntegratedGPU.title,
+                                  _advancedGPUWindowController.viewController.maximizeThroughput.title ]
+                           key:nil];
+
     [self defineControl:_enableBonjour
                     key:kPreferenceKeyAddBonjourHostsToProfiles
-                            type:kPreferenceInfoTypeCheckbox];
+            relatedView:nil
+                   type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_checkUpdate
                     key:kPreferenceKeyCheckForUpdatesAutomatically
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_checkTestRelease
                     key:kPreferenceKeyCheckForTestReleases
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     // ---------------------------------------------------------------------------------------------
     info = [self defineControl:_loadPrefsFromCustomFolder
                            key:kPreferenceKeyLoadPrefsFromCustomFolder
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.onChange = ^() { [self loadPrefsFromCustomFolderDidChange]; };
     info.observer = ^() { [self updateRemotePrefsViews]; };
 
     info = [self defineControl:_autoSaveOnQuit
                            key:@"NoSyncNeverRemindPrefsChangesLostForFile_selection"
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     // Called when user interacts with control
     info.customSettingChangedHandler = ^(id sender) {
@@ -340,9 +353,9 @@ enum {
     info.onUpdate();
 
     // ---------------------------------------------------------------------------------------------
-    info = [self defineControl:_prefsCustomFolder
-                           key:kPreferenceKeyCustomFolder
-                          type:kPreferenceInfoTypeStringTextField];
+    info = [self defineUnsearchableControl:_prefsCustomFolder
+                                       key:kPreferenceKeyCustomFolder
+                                      type:kPreferenceInfoTypeStringTextField];
     info.shouldBeEnabled = ^BOOL() {
         return [iTermPreferences boolForKey:kPreferenceKeyLoadPrefsFromCustomFolder];
     };
@@ -355,47 +368,58 @@ enum {
     // ---------------------------------------------------------------------------------------------
     [self defineControl:_selectionCopiesText
                     key:kPreferenceKeySelectionCopiesText
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_copyLastNewline
                     key:kPreferenceKeyCopyLastNewline
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_allowClipboardAccessFromTerminal
                     key:kPreferenceKeyAllowClipboardAccessFromTerminal
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_wordChars
                     key:kPreferenceKeyCharactersConsideredPartOfAWordForSelection
+            relatedView:_wordCharsLabel
                    type:kPreferenceInfoTypeStringTextField];
 
     [self defineControl:_smartPlacement
                     key:kPreferenceKeySmartWindowPlacement
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_adjustWindowForFontSizeChange
                     key:kPreferenceKeyAdjustWindowForFontSizeChange
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_maxVertically
                     key:kPreferenceKeyMaximizeVerticallyOnly
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_lionStyleFullscreen
                     key:kPreferenceKeyLionStyleFullscreen
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     info = [self defineControl:_openTmuxWindows
                            key:kPreferenceKeyOpenTmuxWindowsIn
+                   relatedView:_openTmuxWindowsLabel
                           type:kPreferenceInfoTypePopup];
     // This is how it was done before the great refactoring, but I don't see why it's needed.
     info.onChange = ^() { [weakSelf postRefreshNotification]; };
 
     [self defineControl:_autoHideTmuxClientSession
                     key:kPreferenceKeyAutoHideTmuxClientSession
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
     [self defineControl:_useTmuxProfile
                     key:kPreferenceKeyUseTmuxProfile
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 }
 

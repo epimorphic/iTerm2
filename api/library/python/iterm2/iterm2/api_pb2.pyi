@@ -439,6 +439,17 @@ class InvokeFunctionRequest(google___protobuf___message___Message):
         def MergeFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
         def CopyFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
 
+    class Method(google___protobuf___message___Message):
+        receiver = ... # type: typing___Text
+
+        def __init__(self,
+            receiver : typing___Optional[typing___Text] = None,
+            ) -> None: ...
+        @classmethod
+        def FromString(cls, s: bytes) -> InvokeFunctionRequest.Method: ...
+        def MergeFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
+        def CopyFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
+
     invocation = ... # type: typing___Text
     timeout = ... # type: float
 
@@ -454,11 +465,15 @@ class InvokeFunctionRequest(google___protobuf___message___Message):
     @property
     def app(self) -> InvokeFunctionRequest.App: ...
 
+    @property
+    def method(self) -> InvokeFunctionRequest.Method: ...
+
     def __init__(self,
         tab : typing___Optional[InvokeFunctionRequest.Tab] = None,
         session : typing___Optional[InvokeFunctionRequest.Session] = None,
         window : typing___Optional[InvokeFunctionRequest.Window] = None,
         app : typing___Optional[InvokeFunctionRequest.App] = None,
+        method : typing___Optional[InvokeFunctionRequest.Method] = None,
         invocation : typing___Optional[typing___Text] = None,
         timeout : typing___Optional[float] = None,
         ) -> None: ...
@@ -480,7 +495,6 @@ class InvokeFunctionResponse(google___protobuf___message___Message):
         def values(cls) -> typing___List[InvokeFunctionResponse.Status]: ...
         @classmethod
         def items(cls) -> typing___List[typing___Tuple[str, InvokeFunctionResponse.Status]]: ...
-    OK = typing___cast(Status, 0)
     TIMEOUT = typing___cast(Status, 1)
     FAILED = typing___cast(Status, 2)
     REQUEST_MALFORMED = typing___cast(Status, 3)
@@ -1705,6 +1719,7 @@ class VariableRequest(google___protobuf___message___Message):
     session_id = ... # type: typing___Text
     tab_id = ... # type: typing___Text
     app = ... # type: bool
+    window_id = ... # type: typing___Text
     get = ... # type: google___protobuf___internal___containers___RepeatedScalarFieldContainer[typing___Text]
 
     @property
@@ -1714,6 +1729,7 @@ class VariableRequest(google___protobuf___message___Message):
         session_id : typing___Optional[typing___Text] = None,
         tab_id : typing___Optional[typing___Text] = None,
         app : typing___Optional[bool] = None,
+        window_id : typing___Optional[typing___Text] = None,
         set : typing___Optional[typing___Iterable[VariableRequest.Set]] = None,
         get : typing___Optional[typing___Iterable[typing___Text]] = None,
         ) -> None: ...
@@ -1741,6 +1757,7 @@ class VariableResponse(google___protobuf___message___Message):
     MISSING_SCOPE = typing___cast(Status, 3)
     TAB_NOT_FOUND = typing___cast(Status, 4)
     MULTI_GET_DISALLOWED = typing___cast(Status, 5)
+    WINDOW_NOT_FOUND = typing___cast(Status, 6)
 
     status = ... # type: VariableResponse.Status
     values = ... # type: google___protobuf___internal___containers___RepeatedScalarFieldContainer[typing___Text]
@@ -2779,6 +2796,19 @@ class SetProfilePropertyRequest(google___protobuf___message___Message):
         def MergeFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
         def CopyFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
 
+    class Assignment(google___protobuf___message___Message):
+        key = ... # type: typing___Text
+        json_value = ... # type: typing___Text
+
+        def __init__(self,
+            key : typing___Optional[typing___Text] = None,
+            json_value : typing___Optional[typing___Text] = None,
+            ) -> None: ...
+        @classmethod
+        def FromString(cls, s: bytes) -> SetProfilePropertyRequest.Assignment: ...
+        def MergeFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
+        def CopyFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
+
     session = ... # type: typing___Text
     key = ... # type: typing___Text
     json_value = ... # type: typing___Text
@@ -2786,11 +2816,15 @@ class SetProfilePropertyRequest(google___protobuf___message___Message):
     @property
     def guid_list(self) -> SetProfilePropertyRequest.GuidList: ...
 
+    @property
+    def assignments(self) -> google___protobuf___internal___containers___RepeatedCompositeFieldContainer[SetProfilePropertyRequest.Assignment]: ...
+
     def __init__(self,
         session : typing___Optional[typing___Text] = None,
         guid_list : typing___Optional[SetProfilePropertyRequest.GuidList] = None,
         key : typing___Optional[typing___Text] = None,
         json_value : typing___Optional[typing___Text] = None,
+        assignments : typing___Optional[typing___Iterable[SetProfilePropertyRequest.Assignment]] = None,
         ) -> None: ...
     @classmethod
     def FromString(cls, s: bytes) -> SetProfilePropertyRequest: ...

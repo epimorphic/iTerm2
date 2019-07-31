@@ -7,6 +7,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#import "NSObject+iTerm.h"
 
 typedef struct {
     int x;
@@ -57,6 +58,8 @@ typedef struct {
     VT100GridAbsCoordRange coordRange;  // inclusive of y, half-open on x
     VT100GridRange columnWindow;
 } VT100GridAbsWindowedRange;
+
+extern const VT100GridCoord VT100GridCoordInvalid;
 
 @interface NSValue (VT100Grid)
 
@@ -384,6 +387,16 @@ NS_INLINE long long VT100GridCoordDistance(VT100GridCoord a, VT100GridCoord b, i
     return llabs(aPos - bPos);
 }
 
+NS_INLINE BOOL VT100GridWindowedRangeContainsCoord(VT100GridWindowedRange range,
+                                                   VT100GridCoord coord) {
+    if (range.columnWindow.location < 0 && range.columnWindow.length < 0) {
+        return VT100GridCoordRangeContainsCoord(range.coordRange, coord);
+    }
+    return (coord.x >= range.columnWindow.location &&
+            coord.x < range.columnWindow.location + range.columnWindow.length &&
+            VT100GridCoordRangeContainsCoord(range.coordRange, coord));
+}
+
 NS_INLINE long long VT100GridWindowedRangeLength(VT100GridWindowedRange range, int gridWidth) {
     if (range.coordRange.start.y == range.coordRange.end.y) {
         return VT100GridWindowedRangeEnd(range).x - VT100GridWindowedRangeStart(range).x;
@@ -433,3 +446,31 @@ NS_INLINE BOOL VT100GridCoordInRect(VT100GridCoord coord, VT100GridRect rect) {
 VT100GridRun VT100GridRunFromCoords(VT100GridCoord start,
                                     VT100GridCoord end,
                                     int width);
+
+NS_INLINE NSDictionary *VT100GridCoordToDictionary(VT100GridCoord coord) {
+    return @{ @"x": @(coord.x), @"y": @(coord.y) };
+}
+
+NS_INLINE BOOL VT100GridCoordFromDictionary(NSDictionary *dict, VT100GridCoord *coord) {
+    if (!dict) {
+        return NO;
+    }
+
+    if (![dict isKindOfClass:[NSDictionary class]]) {
+        return NO;
+    }
+
+    NSNumber *x = [NSNumber castFrom:dict[@"x"]];
+    if (!x) {
+        return NO;
+    }
+
+    NSNumber *y = [NSNumber castFrom:dict[@"y"]];
+    if (!y) {
+        return NO;
+    }
+
+    *coord = VT100GridCoordMake(x.intValue, y.intValue);
+    return YES;
+}
+

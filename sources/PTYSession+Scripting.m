@@ -1,6 +1,7 @@
 #import "PTYSession+Scripting.h"
 
 #import "iTermVariableScope.h"
+#import "iTermVariableScope+Session.h"
 #import "NSColor+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "ProfilesColorsPreferencesViewController.h"
@@ -38,6 +39,7 @@
            environment:@{}
                 isUTF8:[args[@"isUTF8"] boolValue]
          substitutions:nil
+           synchronous:YES
             completion:nil];
 
     return;
@@ -165,7 +167,8 @@
         profile = temp;
     }
     PTYSession *session = [[self.delegate realParentWindow] splitVertically:vertically
-                                                                withProfile:profile];
+                                                                withProfile:profile
+                                                                synchronous:YES];
     [formerSession activateSessionAndTab];
     return session;
 }
@@ -330,6 +333,10 @@
 
 - (void)setAnswerBackString:(NSString *)string {
     [self setSessionSpecificProfileValues:@{ KEY_ANSWERBACK_STRING: string ?: @"" }];
+}
+
+- (void)setName:(NSString *)name {
+    self.variablesScope.autoNameFormat = name;
 }
 
 #pragma mark ANSI Colors

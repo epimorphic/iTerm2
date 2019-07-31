@@ -13,6 +13,8 @@ NSString *const kPointerPrefsChangedNotification = @"kPointerPrefsChangedNotific
 NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPointerPrefsSemanticHistoryEnabledChangedNotification";
 
 @implementation PointerPreferencesViewController {
+    IBOutlet NSTabView *_tabView;
+
     // Cmd-click to launch url.
     IBOutlet NSButton *_cmdSelection;
 
@@ -41,6 +43,7 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
     __weak __typeof(self) weakSelf = self;
     info = [self defineControl:_cmdSelection
                            key:kPreferenceKeyCmdClickOpensURLs
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.onChange = ^() {
         [[NSNotificationCenter defaultCenter] postNotificationName:kPointerPrefsSemanticHistoryEnabledChangedNotification
@@ -49,14 +52,17 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
 
     [self defineControl:_controlLeftClickActsLikeRightClick
                     key:kPreferenceKeyControlLeftClickBypassesContextMenu
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_optionClickMovesCursor
                     key:kPreferenceKeyOptionClickMovesCursor
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     info = [self defineControl:_threeFingerEmulatesMiddle
                            key:kPreferenceKeyThreeFingerEmulatesMiddle
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.onChange = ^() {
         [weakSelf postRefreshNotification];
@@ -67,14 +73,25 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
 
     [self defineControl:_focusFollowsMouse
                     key:kPreferenceKeyFocusFollowsMouse
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_tripleClickSelectsFullLines
                     key:kPreferenceKeyTripleClickSelectsFullWrappedLines
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
     [self defineControl:_doubleClickPerformsSmartSelection
                     key:kPreferenceKeyDoubleClickPerformsSmartSelection
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
+}
+
+- (NSTabView *)tabView {
+    return _tabView;
+}
+
+- (CGFloat)minimumWidth {
+    return 186;
 }
 
 @end

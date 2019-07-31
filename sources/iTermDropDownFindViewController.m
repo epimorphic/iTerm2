@@ -26,27 +26,30 @@
  */
 
 #import "iTermDropDownFindViewController.h"
+
 #import "DebugLogging.h"
 #import "iTerm.h"
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermApplication.h"
 #import "iTermFindDriver.h"
 #import "iTermFindDriver+Internal.h"
+#import "iTermFocusReportingTextField.h"
 #import "iTermPreferences.h"
 #import "iTermProgressIndicator.h"
 #import "iTermSearchFieldCell.h"
 #import "iTermSystemVersion.h"
+#import "NSEvent+iTerm.h"
 #import "NSTextField+iTerm.h"
 
 // This used to be absurdly fast (.075) for reasons neither I nor revision
 // history can recall. This looks nicer to my eyes.
 static const float kAnimationDuration = 0.2;
 
-@interface iTermDropDownFindViewController()<NSSearchFieldDelegate>
+@interface iTermDropDownFindViewController()<iTermFocusReportingSearchFieldDelegate>
 @end
 
 @implementation iTermDropDownFindViewController {
-    IBOutlet NSSearchField *findBarTextField_;
+    IBOutlet iTermFocusReportingSearchField *findBarTextField_;
 
     // Fades out the progress indicator.
     NSTimer *_animationTimer;
@@ -180,6 +183,10 @@ static const float kAnimationDuration = 0.2;
     self.driver.mode = (iTermFindMode)[sender tag];
 }
 
+- (IBAction)eraseSearchHistory:(id)sender {
+    [self.driver eraseSearchHistory];
+}
+
 #pragma mark - NSViewController
 
 - (BOOL)validateUserInterfaceItem:(NSMenuItem *)item {
@@ -195,7 +202,18 @@ static const float kAnimationDuration = 0.2;
         return;
     }
     
-    [self.driver userDidEditSearchQuery:findBarTextField_.stringValue];
+    [self.driver userDidEditSearchQuery:findBarTextField_.stringValue
+                            fieldEditor:aNotification.userInfo[@"NSFieldEditor"]];
+}
+
+- (NSArray *)control:(NSControl *)control
+            textView:(NSTextView *)textView
+         completions:(NSArray *)words  // Dictionary words
+ forPartialWordRange:(NSRange)charRange
+ indexOfSelectedItem:(NSInteger *)index {
+    *index = -1;
+    return [self.driver completionsForText:[textView string]
+                                     range:charRange];
 }
 
 - (BOOL)control:(NSControl *)control
@@ -220,6 +238,7 @@ static const float kAnimationDuration = 0.2;
         [self.driver copyPasteSelection];
         return YES;
     } else {
+        [self.driver doCommandBySelector:commandSelector];
         return NO;
     }
 }
@@ -238,7 +257,7 @@ static const float kAnimationDuration = 0.2;
             break;
         case NSReturnTextMovement: {
             // Return key
-            const BOOL shiftPressed = ([[NSApp currentEvent] modifierFlags] & NSEventModifierFlagShift);
+            const BOOL shiftPressed = !!([[NSApp currentEvent] it_modifierFlags] & NSEventModifierFlagShift);
             const BOOL swap = [iTermAdvancedSettingsModel swapFindNextPrevious];
             if  (!shiftPressed ^ swap) {
                 [self.driver searchNext];
@@ -317,6 +336,12 @@ static const float kAnimationDuration = 0.2;
 #pragma mark - NSCoding
 
 - (void)encodeWithCoder:(nonnull NSCoder *)aCoder {
+}
+
+#pragma mark - iTermFocusReportingSearchField
+
+- (void)focusReportingSearchFieldWillBecomeFirstResponder:(iTermFocusReportingSearchField *)sender {
+    [self.driver searchFieldWillBecomeFirstResponder:findBarTextField_];
 }
 
 @end

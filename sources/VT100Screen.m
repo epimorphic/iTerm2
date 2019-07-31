@@ -58,6 +58,7 @@ NSString *const kScreenStateLastCommandMarkKey = @"Last Command Mark";
 NSString *const kScreenStatePrimaryGridStateKey = @"Primary Grid State";
 NSString *const kScreenStateAlternateGridStateKey = @"Alternate Grid State";
 NSString *const kScreenStateNumberOfLinesDroppedKey = @"Number of Lines Dropped";
+NSString *const kScreenStateCursorCoord = @"Cursor Coord";
 
 int kVT100ScreenMinColumns = 2;
 int kVT100ScreenMinRows = 2;
@@ -258,6 +259,7 @@ static NSString *const kInlineFileInset = @"inset";  // NSValue of NSEdgeInsets
 #pragma mark - APIs
 
 - (void)setTerminal:(VT100Terminal *)terminal {
+    DLog(@"set terminal=%@", terminal);
     [terminal_ autorelease];
     terminal_ = [terminal retain];
     _ansi = [terminal_ isAnsi];
@@ -293,7 +295,8 @@ static NSString *const kInlineFileInset = @"inset";  // NSValue of NSEdgeInsets
     // printed. See issue 4261.
     return ([note isKindOfClass:[VT100RemoteHost class]] ||
             [note isKindOfClass:[VT100WorkingDirectory class]] ||
-            [note isKindOfClass:[iTermImageMark class]]);
+            [note isKindOfClass:[iTermImageMark class]] ||
+            [note isKindOfClass:[iTermURLMark class]]);
 }
 
 // This is used for a very specific case. It's used when you have some history, optionally followed
@@ -827,11 +830,11 @@ static NSString *const kInlineFileInset = @"inset";  // NSValue of NSEdgeInsets
     int lines __attribute__((unused)) = [linebuffer_ numLinesWithWidth:currentGrid_.size.width];
     NSAssert(lines >= 0, @"Negative lines");
 
+    [selection clearSelection];
     // An immediate refresh is needed so that the size of textview can be
     // adjusted to fit the new size
     DebugLog(@"setSize setDirty");
     [delegate_ screenNeedsRedraw];
-    [selection clearSelection];
     if (couldHaveSelection) {
         NSMutableArray *subSelectionsToAdd = [NSMutableArray array];
         for (iTermSubSelection* sub in newSubSelections) {
@@ -1052,15 +1055,17 @@ static NSString *const kInlineFileInset = @"inset";  // NSValue of NSEdgeInsets
     // Cancel out the current command if shell integration is in use and we are
     // at the shell prompt.
 
+    const int linesToSave = [self numberOfLinesToPreserveWhenClearingScreen];
     // NOTE: This is in screen coords (y=0 is the top)
     VT100GridCoord newCommandStart = VT100GridCoordMake(-1, -1);
     if (commandStartX_ >= 0) {
-        // Save the start location of the command. If it's a multi-line command
-        // it'll get truncated and the display is hopelessly messed up, so
-        // while this is not the true start of the command it's better than not
-        // recording a start, which would break alt-click to move the cursor.
-        // The user will probably cancel the command or press ^L to redraw.
-        newCommandStart = VT100GridCoordMake(commandStartX_, 0);
+        // Compute the new location of the command's beginning, which is right
+        // after the end of the prompt in its new location.
+        int numberOfPromptLines = 1;
+        if (!VT100GridAbsCoordEquals(_currentPromptRange.start, _currentPromptRange.end)) {
+            numberOfPromptLines = MAX(1, _currentPromptRange.end.y - _currentPromptRange.start.y + 1);
+        }
+        newCommandStart = VT100GridCoordMake(commandStartX_, numberOfPromptLines - 1);
 
         // Abort the current command.
         [self commandWasAborted];
@@ -1069,7 +1074,7 @@ static NSString *const kInlineFileInset = @"inset";  // NSValue of NSEdgeInsets
     _lastCommandOutputRange = VT100GridAbsCoordRangeMake(-1, -1, -1, -1);
 
     // Clear the grid by scrolling it up into history.
-    [self clearAndResetScreenPreservingCursorLine];
+    [self clearAndResetScreenSavingLines:linesToSave];
 
     // Erase history.
     [self clearScrollbackBuffer];
@@ -1079,7 +1084,7 @@ static NSString *const kInlineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
     if (newCommandStart.x >= 0) {
         // Create a new mark and inform the delegate that there's new command start coord.
-        [delegate_ screenPromptDidStartAtLine:[self numberOfScrollbackLines] + self.cursorY - 1];
+        [delegate_ screenPromptDidStartAtLine:[self numberOfScrollbackLines]];
         [self commandDidStartAtScreenCoord:newCommandStart];
     }
     [terminal_ resetSavedCursorPositions];
@@ -1087,20 +1092,37 @@ static NSString *const kInlineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
 // This clears the screen, leaving the cursor's line at the top and preserves the cursor's x
 // coordinate. Scroll regions and the saved cursor position are reset.
-- (void)clearAndResetScreenPreservingCursorLine {
+- (void)clearAndResetScreenSavingLines:(int)linesToSave {
     [delegate_ screenTriggerableChangeDidOccur];
     // This clears the screen.
     int x = currentGrid_.cursorX;
-    int numberOfPromptLines = 1;
-    if (!VT100GridAbsCoordEquals(_currentPromptRange.start, _currentPromptRange.end)) {
-        numberOfPromptLines = MAX(1, _currentPromptRange.end.y - _currentPromptRange.start.y + 1);
-    }
     [self incrementOverflowBy:[currentGrid_ resetWithLineBuffer:linebuffer_
                                             unlimitedScrollback:unlimitedScrollback_
                                              preserveCursorLine:YES
-                                          additionalLinesToSave:MAX(0, numberOfPromptLines - 1)]];
+                                          additionalLinesToSave:MAX(0, linesToSave - 1)]];
     currentGrid_.cursorX = x;
-    currentGrid_.cursorY = numberOfPromptLines - 1;
+    currentGrid_.cursorY = linesToSave - 1;
+}
+
+- (int)numberOfLinesToPreserveWhenClearingScreen {
+    if (VT100GridAbsCoordEquals(_currentPromptRange.start, _currentPromptRange.end)) {
+        // Prompt range not defined.
+        return 1;
+    }
+    if (commandStartX_ < 0) {
+        // Prompt apparently hasn't ended.
+        return 1;
+    }
+    VT100ScreenMark *lastCommandMark = [self lastPromptMark];
+    if (!lastCommandMark) {
+        // Never had a mark.
+        return 1;
+    }
+
+    VT100GridCoordRange lastCommandMarkRange = [self coordRangeForInterval:lastCommandMark.entry.interval];
+    int cursorLine = self.cursorY - 1 + self.numberOfScrollbackLines;
+    int cursorMarkOffset = cursorLine - lastCommandMarkRange.start.y;
+    return 1 + cursorMarkOffset;
 }
 
 - (void)clearScrollbackBuffer
@@ -2101,7 +2123,7 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
     return coord;
 }
 
-- (void)setWorkingDirectory:(NSString *)workingDirectory onLine:(int)line {
+- (void)setWorkingDirectory:(NSString *)workingDirectory onLine:(int)line isSuitableForOldPWD:(BOOL)isSuitableForOldPWD {
     DLog(@"setWorkingDirectory:%@ onLine:%d", workingDirectory, line);
     VT100WorkingDirectory *workingDirectoryObj = [[[VT100WorkingDirectory alloc] init] autorelease];
     if (!workingDirectory) {
@@ -2141,7 +2163,9 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
                         withInterval:[self intervalForGridCoordRange:range]];
         }
     }
-    [delegate_ screenLogWorkingDirectoryAtLine:line withDirectory:workingDirectory];
+    [delegate_ screenLogWorkingDirectoryAtLine:line
+                                 withDirectory:workingDirectory
+                           isSuitableForOldPWD:isSuitableForOldPWD];
 }
 
 - (VT100RemoteHost *)setRemoteHost:(NSString *)host user:(NSString *)user onLine:(int)line {
@@ -2979,9 +3003,10 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
 }
 
 - (void)terminalResetPreservingPrompt:(BOOL)preservePrompt {
+    const int linesToSave = [self numberOfLinesToPreserveWhenClearingScreen];
     [delegate_ screenTriggerableChangeDidOccur];
     if (preservePrompt) {
-        [self clearAndResetScreenPreservingCursorLine];
+        [self clearAndResetScreenSavingLines:linesToSave];
     } else {
         [self incrementOverflowBy:[currentGrid_ resetWithLineBuffer:linebuffer_
                                                 unlimitedScrollback:unlimitedScrollback_
@@ -3125,7 +3150,7 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
         DLog(@"Don't have a remote host, so changing working directory");
         // TODO: There's a bug here where remote host can scroll off the end of history, causing the
         // working directory to come from PTYTask (which is what happens when nil is passed here).
-        [self setWorkingDirectory:nil onLine:[self lineNumberOfCursor]];
+        [self setWorkingDirectory:nil onLine:[self lineNumberOfCursor] isSuitableForOldPWD:NO];
     } else {
         DLog(@"Already have a remote host so not updating working directory because of title change");
     }
@@ -3538,7 +3563,9 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
 }
 
 - (void)terminalSetRemoteHost:(NSString *)remoteHost {
-    NSRange atRange = [remoteHost rangeOfString:@"@"];
+    DLog(@"Set remote host to %@ %@", remoteHost, self);
+    // Search backwards because Windows UPN format includes an @ in the user name. I don't think hostnames would ever have an @ sign.
+    NSRange atRange = [remoteHost rangeOfString:@"@" options:NSBackwardsSearch];
     NSString *user = nil;
     NSString *host = nil;
     if (atRange.length == 1) {
@@ -3555,6 +3582,7 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
 }
 
 - (void)setHost:(NSString *)host user:(NSString *)user {
+    DLog(@"setHost:%@ user:%@ %@", host, user, self);
     VT100RemoteHost *currentHost = [self remoteHostOnLine:[self numberOfLines]];
     if (!host || !user) {
         // A trigger can set the host and user alone. If remoteHost looks like example.com or
@@ -3645,6 +3673,11 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
     [self clearBuffer];
 }
 
+// NOTE: Call this only when you reasonably believe that the working directory will be kept
+// up-to-date (i.e., you expect future calls because this is a trigger or an escape sequence
+// from someone who ought to know what they're doing, like Shell Integration scripts).
+// It passes YES for isSuitableForOldPWD so this will override the "os magic" to get the pwd
+// forever.
 - (void)terminalCurrentDirectoryDidChangeTo:(NSString *)value {
     int cursorLine = [self numberOfLines] - [self height] + currentGrid_.cursorY;
     NSString *dir = value;
@@ -3654,7 +3687,8 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
     if (dir.length) {
         [delegate_ screenSetPreferredProxyIcon:nil]; // Clear current proxy icon if exists.
         BOOL willChange = ![dir isEqualToString:[self workingDirectoryOnLine:cursorLine]];
-        [self setWorkingDirectory:dir onLine:cursorLine];
+        // Pass YES for isSuitableForOldPWD to treat this as proof that shell integration is used.
+        [self setWorkingDirectory:dir onLine:cursorLine isSuitableForOldPWD:YES];
         if (willChange) {
             [delegate_ screenCurrentDirectoryDidChangeTo:dir];
         }
@@ -4467,7 +4501,9 @@ basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
     if (c.blink) {
         [result addObject:@"5"];
     }
-
+    if (c.strikethrough) {
+        [result addObject:@"9"];
+    }
     return result;
 }
 
@@ -5343,7 +5379,6 @@ static void SwapInt(int *a, int *b) {
     }
     [currentGrid_ appendLines:numLines toLineBuffer:temp];
     NSMutableDictionary *dict = [[[temp dictionary] mutableCopy] autorelease];
-    static NSString *const kScreenStateTabStopsKey = @"Tab Stops";
     dict[kScreenStateKey] =
         [@{ kScreenStateTabStopsKey: [tabStops_ allObjects] ?: @[],
             kScreenStateTerminalKey: [terminal_ stateDictionary] ?: @{},
@@ -5365,7 +5400,8 @@ static void SwapInt(int *a, int *b) {
             kScreenStateLastCommandMarkKey: _lastCommandMark.guid ?: [NSNull null],
             kScreenStatePrimaryGridStateKey: primaryGrid_.dictionaryValue ?: @{},
             kScreenStateAlternateGridStateKey: altGrid_.dictionaryValue ?: [NSNull null],
-            kScreenStateNumberOfLinesDroppedKey: @(linesDroppedForBrevity)
+            kScreenStateNumberOfLinesDroppedKey: @(linesDroppedForBrevity),
+            kScreenStateCursorCoord: VT100GridCoordToDictionary(primaryGrid_.cursor),
             } dictionaryByRemovingNullValues];
     return dict;
 }
@@ -5385,6 +5421,42 @@ static void SwapInt(int *a, int *b) {
     return [temp dictionary];
 }
 
+- (void)appendSessionRestoredBanner {
+    // Save graphic rendition. Set to system message color.
+    const VT100GraphicRendition saved = terminal_.graphicRendition;
+
+    VT100GraphicRendition temp = saved;
+    temp.fgColorMode = ColorModeAlternate;
+    temp.fgColorCode = ALTSEM_SYSTEM_MESSAGE;
+    temp.bgColorMode = ColorModeAlternate;
+    temp.bgColorCode = ALTSEM_SYSTEM_MESSAGE;
+    terminal_.graphicRendition = temp;
+
+    // Record the cursor position and append the message.
+    const int yBefore = currentGrid_.cursor.y;
+    if (currentGrid_.cursor.x > 0) {
+        [self crlf];
+    }
+    [self terminalEraseLineBeforeCursor:YES afterCursor:YES];
+    NSDateFormatter *dateFormatter = [[[NSDateFormatter alloc] init] autorelease];
+    dateFormatter.dateStyle = NSDateFormatterMediumStyle;
+    dateFormatter.timeStyle = NSDateFormatterShortStyle;
+    NSString *message = [NSString stringWithFormat:@"Session Contents Restored on %@", [dateFormatter stringFromDate:[NSDate date]]];
+    [self appendStringAtCursor:message];
+
+    // Restore the graphic rendition, add a newline, and calculate how far down the cursor moved.
+    terminal_.graphicRendition = saved;
+    [self crlf];
+    const int delta = currentGrid_.cursor.y - yBefore;
+
+    // Update the preferred cursor position if needed.
+    if (currentGrid_.preferredCursorPosition.y >= 0 && currentGrid_.preferredCursorPosition.y + 1 < currentGrid_.size.height) {
+        VT100GridCoord coord = currentGrid_.preferredCursorPosition;
+        coord.y = MAX(0, MIN(currentGrid_.size.height - 1, coord.y + delta));
+        currentGrid_.preferredCursorPosition = coord;
+    }
+}
+
 - (void)restoreFromDictionary:(NSDictionary *)dictionary
      includeRestorationBanner:(BOOL)includeRestorationBanner
                 knownTriggers:(NSArray *)triggers
@@ -5392,7 +5464,7 @@ static void SwapInt(int *a, int *b) {
     if (!altGrid_) {
         altGrid_ = [primaryGrid_ copy];
     }
-    NSDictionary *screenState = reattached ? dictionary[kScreenStateKey] : nil;
+    NSDictionary *screenState = dictionary[kScreenStateKey];
     if (screenState) {
         if ([screenState[kScreenStateCurrentGridIsPrimaryKey] boolValue]) {
             currentGrid_ = primaryGrid_;
@@ -5402,12 +5474,6 @@ static void SwapInt(int *a, int *b) {
     }
 
     LineBuffer *lineBuffer = [[LineBuffer alloc] initWithDictionary:dictionary];
-    if (includeRestorationBanner && [iTermAdvancedSettingsModel showSessionRestoredBanner]) {
-        NSDateFormatter *dateFormatter = [[[NSDateFormatter alloc] init] autorelease];
-        dateFormatter.dateStyle = NSDateFormatterMediumStyle;
-        dateFormatter.timeStyle = NSDateFormatterShortStyle;
-        [lineBuffer appendMessage:[NSString stringWithFormat:@"Session Contents Restored on %@", [dateFormatter stringFromDate:[NSDate date]]]];
-    }
     [lineBuffer setMaxLines:maxScrollbackLines_ + self.height];
     if (!unlimitedScrollback_) {
         [lineBuffer dropExcessLinesWithWidth:self.width];
@@ -5422,13 +5488,38 @@ static void SwapInt(int *a, int *b) {
     }
     int linesRestored = MIN(MAX(0, maxLinesToRestore),
                             [lineBuffer numLinesWithWidth:self.width]);
-    [currentGrid_ restoreScreenFromLineBuffer:linebuffer_
-                              withDefaultChar:[currentGrid_ defaultChar]
-                            maxLinesToRestore:linesRestored];
+    BOOL setCursorPosition = [currentGrid_ restoreScreenFromLineBuffer:linebuffer_
+                                                       withDefaultChar:[currentGrid_ defaultChar]
+                                                     maxLinesToRestore:linesRestored];
     DLog(@"appendFromDictionary: Grid size is %dx%d", currentGrid_.size.width, currentGrid_.size.height);
     DLog(@"Restored %d wrapped lines from dictionary", [self numberOfScrollbackLines] + linesRestored);
-    currentGrid_.cursorY = linesRestored + 1;
-    currentGrid_.cursorX = 0;
+    DLog(@"setCursorPosition=%@", @(setCursorPosition));
+    if (!setCursorPosition) {
+        VT100GridCoord coord;
+        if (VT100GridCoordFromDictionary(screenState[kScreenStateCursorCoord], &coord)) {
+            // The initial size of this session might be smaller than its eventual size.
+            // Save the coord because after the window is set to its correct size it might be
+            // possible to place the cursor in this position.
+            currentGrid_.preferredCursorPosition = coord;
+            DLog(@"Save preferred cursor position %@", VT100GridCoordDescription(coord));
+            if (coord.x >= 0 &&
+                coord.y >= 0 &&
+                coord.x <= self.width &&
+                coord.y < self.height) {
+                DLog(@"Also set the cursor to this position");
+                currentGrid_.cursor = coord;
+                setCursorPosition = YES;
+            }
+        }
+    }
+    if (!setCursorPosition) {
+        DLog(@"Place the cursor on the first column of the last line");
+        currentGrid_.cursorY = linesRestored + 1;
+        currentGrid_.cursorX = 0;
+    }
+    if (includeRestorationBanner && [iTermAdvancedSettingsModel showSessionRestoredBanner]) {
+        [self appendSessionRestoredBanner];
+    }
 
     // Reduce line buffer's max size to not include the grid height. This is its final state.
     [lineBuffer setMaxLines:maxScrollbackLines_];
@@ -5469,9 +5560,11 @@ static void SwapInt(int *a, int *b) {
                       guidOfLastCommandMark:guidOfLastCommandMark];
 
         [self reloadMarkCache];
-        commandStartX_ = [screenState[kScreenStateCommandStartXKey] intValue];
-        commandStartY_ = [screenState[kScreenStateCommandStartYKey] intValue];
-        _startOfRunningCommandOutput = [screenState[kScreenStateNextCommandOutputStartKey] gridAbsCoord];
+        if (reattached) {
+            commandStartX_ = [screenState[kScreenStateCommandStartXKey] intValue];
+            commandStartY_ = [screenState[kScreenStateCommandStartYKey] intValue];
+            _startOfRunningCommandOutput = [screenState[kScreenStateNextCommandOutputStartKey] gridAbsCoord];
+        }
         _cursorVisible = [screenState[kScreenStateCursorVisibleKey] boolValue];
         _trackCursorLineMovement = [screenState[kScreenStateTrackCursorLineMovementKey] boolValue];
         _lastCommandOutputRange = [screenState[kScreenStateLastCommandOutputRangeKey] gridAbsCoordRange];

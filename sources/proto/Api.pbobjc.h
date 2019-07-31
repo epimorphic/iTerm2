@@ -69,6 +69,7 @@ CF_EXTERN_C_BEGIN
 @class ITMInjectResponse;
 @class ITMInvokeFunctionRequest;
 @class ITMInvokeFunctionRequest_App;
+@class ITMInvokeFunctionRequest_Method;
 @class ITMInvokeFunctionRequest_Session;
 @class ITMInvokeFunctionRequest_Tab;
 @class ITMInvokeFunctionRequest_Window;
@@ -147,6 +148,7 @@ CF_EXTERN_C_BEGIN
 @class ITMSetBroadcastDomainsRequest;
 @class ITMSetBroadcastDomainsResponse;
 @class ITMSetProfilePropertyRequest;
+@class ITMSetProfilePropertyRequest_Assignment;
 @class ITMSetProfilePropertyRequest_GuidList;
 @class ITMSetProfilePropertyResponse;
 @class ITMSetPropertyRequest;
@@ -275,7 +277,6 @@ BOOL ITMVariableScope_IsValidValue(int32_t value);
 #pragma mark - Enum ITMInvokeFunctionResponse_Status
 
 typedef GPB_ENUM(ITMInvokeFunctionResponse_Status) {
-  ITMInvokeFunctionResponse_Status_Ok = 0,
   ITMInvokeFunctionResponse_Status_Timeout = 1,
   ITMInvokeFunctionResponse_Status_Failed = 2,
   ITMInvokeFunctionResponse_Status_RequestMalformed = 3,
@@ -549,6 +550,7 @@ typedef GPB_ENUM(ITMVariableResponse_Status) {
   ITMVariableResponse_Status_MissingScope = 3,
   ITMVariableResponse_Status_TabNotFound = 4,
   ITMVariableResponse_Status_MultiGetDisallowed = 5,
+  ITMVariableResponse_Status_WindowNotFound = 6,
 };
 
 GPBEnumDescriptor *ITMVariableResponse_Status_EnumDescriptor(void);
@@ -1276,6 +1278,7 @@ typedef GPB_ENUM(ITMInvokeFunctionRequest_FieldNumber) {
   ITMInvokeFunctionRequest_FieldNumber_App = 4,
   ITMInvokeFunctionRequest_FieldNumber_Invocation = 5,
   ITMInvokeFunctionRequest_FieldNumber_Timeout = 6,
+  ITMInvokeFunctionRequest_FieldNumber_Method = 7,
 };
 
 typedef GPB_ENUM(ITMInvokeFunctionRequest_Context_OneOfCase) {
@@ -1284,6 +1287,7 @@ typedef GPB_ENUM(ITMInvokeFunctionRequest_Context_OneOfCase) {
   ITMInvokeFunctionRequest_Context_OneOfCase_Session = 2,
   ITMInvokeFunctionRequest_Context_OneOfCase_Window = 3,
   ITMInvokeFunctionRequest_Context_OneOfCase_App = 4,
+  ITMInvokeFunctionRequest_Context_OneOfCase_Method = 7,
 };
 
 @interface ITMInvokeFunctionRequest : GPBMessage
@@ -1297,6 +1301,8 @@ typedef GPB_ENUM(ITMInvokeFunctionRequest_Context_OneOfCase) {
 @property(nonatomic, readwrite, strong, null_resettable) ITMInvokeFunctionRequest_Window *window;
 
 @property(nonatomic, readwrite, strong, null_resettable) ITMInvokeFunctionRequest_App *app;
+
+@property(nonatomic, readwrite, strong, null_resettable) ITMInvokeFunctionRequest_Method *method;
 
 @property(nonatomic, readwrite, copy, null_resettable) NSString *invocation;
 /** Test to see if @c invocation has been set. */
@@ -1358,6 +1364,20 @@ typedef GPB_ENUM(ITMInvokeFunctionRequest_Window_FieldNumber) {
 #pragma mark - ITMInvokeFunctionRequest_App
 
 @interface ITMInvokeFunctionRequest_App : GPBMessage
+
+@end
+
+#pragma mark - ITMInvokeFunctionRequest_Method
+
+typedef GPB_ENUM(ITMInvokeFunctionRequest_Method_FieldNumber) {
+  ITMInvokeFunctionRequest_Method_FieldNumber_Receiver = 1,
+};
+
+@interface ITMInvokeFunctionRequest_Method : GPBMessage
+
+@property(nonatomic, readwrite, copy, null_resettable) NSString *receiver;
+/** Test to see if @c receiver has been set. */
+@property(nonatomic, readwrite) BOOL hasReceiver;
 
 @end
 
@@ -2699,6 +2719,7 @@ typedef GPB_ENUM(ITMVariableRequest_FieldNumber) {
   ITMVariableRequest_FieldNumber_GetArray = 3,
   ITMVariableRequest_FieldNumber_TabId = 4,
   ITMVariableRequest_FieldNumber_App = 5,
+  ITMVariableRequest_FieldNumber_WindowId = 6,
 };
 
 typedef GPB_ENUM(ITMVariableRequest_Scope_OneOfCase) {
@@ -2706,6 +2727,7 @@ typedef GPB_ENUM(ITMVariableRequest_Scope_OneOfCase) {
   ITMVariableRequest_Scope_OneOfCase_SessionId = 1,
   ITMVariableRequest_Scope_OneOfCase_TabId = 4,
   ITMVariableRequest_Scope_OneOfCase_App = 5,
+  ITMVariableRequest_Scope_OneOfCase_WindowId = 6,
 };
 
 @interface ITMVariableRequest : GPBMessage
@@ -2719,6 +2741,9 @@ typedef GPB_ENUM(ITMVariableRequest_Scope_OneOfCase) {
 @property(nonatomic, readwrite, copy, null_resettable) NSString *tabId;
 
 @property(nonatomic, readwrite) BOOL app;
+
+/** "all" is allowed only if no gets (only sets allowed) */
+@property(nonatomic, readwrite, copy, null_resettable) NSString *windowId;
 
 @property(nonatomic, readwrite, strong, null_resettable) NSMutableArray<ITMVariableRequest_Set*> *setArray;
 /** The number of items in @c setArray without causing the array to be created. */
@@ -4097,6 +4122,7 @@ typedef GPB_ENUM(ITMSetProfilePropertyRequest_FieldNumber) {
   ITMSetProfilePropertyRequest_FieldNumber_GuidList = 2,
   ITMSetProfilePropertyRequest_FieldNumber_Key = 3,
   ITMSetProfilePropertyRequest_FieldNumber_JsonValue = 4,
+  ITMSetProfilePropertyRequest_FieldNumber_AssignmentsArray = 5,
 };
 
 typedef GPB_ENUM(ITMSetProfilePropertyRequest_Target_OneOfCase) {
@@ -4117,29 +4143,19 @@ typedef GPB_ENUM(ITMSetProfilePropertyRequest_Target_OneOfCase) {
 
 @property(nonatomic, readwrite, strong, null_resettable) ITMSetProfilePropertyRequest_GuidList *guidList;
 
-/**
- *
- * Color dictionaries have these mandatory keys taking numeric values between 0 and 1:
- *   Red Component, Green Component, Blue Component
- * And an optional key with a value in 0 to 1:
- *   Alpha Component
- **/
+/** deprecated */
 @property(nonatomic, readwrite, copy, null_resettable) NSString *key;
 /** Test to see if @c key has been set. */
 @property(nonatomic, readwrite) BOOL hasKey;
 
-/**
- * Does not need to be a dictionary. Here are examples of JSON protos having JSON values:
- * Numeric example:
- *   "json_value": "0.5"
- * String example:
- *   "json_value": "\\"Hello world\\""
- * Color example:
- *   "json_value": "{\\"Red Component\\": 1, \\"Green Component\\": 0, \\"Blue Component\\": 0, \\"Alpha Component\\": 1}"
- **/
+/** deprecated */
 @property(nonatomic, readwrite, copy, null_resettable) NSString *jsonValue;
 /** Test to see if @c jsonValue has been set. */
 @property(nonatomic, readwrite) BOOL hasJsonValue;
+
+@property(nonatomic, readwrite, strong, null_resettable) NSMutableArray<ITMSetProfilePropertyRequest_Assignment*> *assignmentsArray;
+/** The number of items in @c assignmentsArray without causing the array to be created. */
+@property(nonatomic, readonly) NSUInteger assignmentsArray_Count;
 
 @end
 
@@ -4159,6 +4175,25 @@ typedef GPB_ENUM(ITMSetProfilePropertyRequest_GuidList_FieldNumber) {
 @property(nonatomic, readwrite, strong, null_resettable) NSMutableArray<NSString*> *guidsArray;
 /** The number of items in @c guidsArray without causing the array to be created. */
 @property(nonatomic, readonly) NSUInteger guidsArray_Count;
+
+@end
+
+#pragma mark - ITMSetProfilePropertyRequest_Assignment
+
+typedef GPB_ENUM(ITMSetProfilePropertyRequest_Assignment_FieldNumber) {
+  ITMSetProfilePropertyRequest_Assignment_FieldNumber_Key = 1,
+  ITMSetProfilePropertyRequest_Assignment_FieldNumber_JsonValue = 2,
+};
+
+@interface ITMSetProfilePropertyRequest_Assignment : GPBMessage
+
+@property(nonatomic, readwrite, copy, null_resettable) NSString *key;
+/** Test to see if @c key has been set. */
+@property(nonatomic, readwrite) BOOL hasKey;
+
+@property(nonatomic, readwrite, copy, null_resettable) NSString *jsonValue;
+/** Test to see if @c jsonValue has been set. */
+@property(nonatomic, readwrite) BOOL hasJsonValue;
 
 @end
 

@@ -7,6 +7,7 @@
 
 #import "Trigger.h"
 #import "DebugLogging.h"
+#import "iTermObject.h"
 #import "iTermSwiftyString.h"
 #import "iTermVariableScope.h"
 #import "iTermWarning.h"
@@ -19,6 +20,9 @@ NSString * const kTriggerRegexKey = @"regex";
 NSString * const kTriggerActionKey = @"action";
 NSString * const kTriggerParameterKey = @"parameter";
 NSString * const kTriggerPartialLineKey = @"partial";
+
+@interface Trigger()<iTermObject>
+@end
 
 @implementation Trigger {
     // The last absolute line number on which this trigger fired for a partial
@@ -35,11 +39,6 @@ NSString * const kTriggerPartialLineKey = @"partial";
 + (Trigger *)triggerFromDict:(NSDictionary *)dict
 {
     NSString *className = [dict objectForKey:kTriggerActionKey];
-    if ([className isEqualToString:@"iTermUserNotificationTrigger"]) {
-        // I foolishly renamed the class in 3.2.1, which broke everyone's triggers. It got renamed
-        // back in 3.2.2. If someone created a new trigger in 3.2.1 it would have the bogus name.
-        className = @"GrowlTrigger";
-    }
     Class class = NSClassFromString(className);
     Trigger *trigger = [[class alloc] init];
     trigger.regex = dict[kTriggerRegexKey];
@@ -126,12 +125,18 @@ NSString * const kTriggerPartialLineKey = @"partial";
     return NO;
 }
 
+- (BOOL)instantTriggerCanFireMultipleTimesPerLine {
+    return NO;
+}
+
 - (BOOL)tryString:(iTermStringLine *)stringLine
         inSession:(PTYSession *)aSession
       partialLine:(BOOL)partialLine
        lineNumber:(long long)lineNumber
  useInterpolation:(BOOL)useInterpolation {
-    if (_partialLine && _lastLineNumber == lineNumber) {
+    if (_partialLine &&
+        !self.instantTriggerCanFireMultipleTimesPerLine &&
+        _lastLineNumber == lineNumber) {
         // Already fired a on a partial line on this line.
         if (!partialLine) {
             _lastLineNumber = -1;
@@ -300,6 +305,16 @@ NSString * const kTriggerPartialLineKey = @"partial";
     } else {
         return data;
     }
+}
+
+#pragma mark - iTermObject
+
+- (iTermBuiltInFunctions *)objectMethodRegistry {
+    return nil;
+}
+
+- (iTermVariableScope *)objectScope {
+    return nil;
 }
 
 @end

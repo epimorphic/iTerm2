@@ -6,201 +6,136 @@ Example Scripts
 
 Here are a collection of working scripts for you to crib from. While they are categorized according to their main function, some of them demonstrate more than one scripting feature. Search through this page or look for **See Also** sections in the documentation that link to examples demonstrating particular APIs.
 
------------------------
-Session Title Providers
------------------------
+----
 
-:doc:`georges_title`
-``````
+**Session Title Providers**
 
-Demonstrates a session title provider.
+:doc:`georges_title` — Demonstrates a complex session title provider.
 
-:doc:`badgetitle`
-`````
+:doc:`badgetitle` — Demonstrates a simple session title provider.
 
-Demonstrates a session title provider.
+----
 
------------------------
-Status Bar Components
------------------------
+**Status Bar Components**
 
-:doc:`statusbar`
-`````
+:doc:`statusbar` — Demonstrates a status bar component with variable-length text and a configurable knob.
 
-Demonstrates a status bar component with variable-length text and a configurable knob.
+:doc:`escindicator` — Demonstrates monitoring for keystrokes, custom status bar components, and using variables as a back-channel for communication between parts of a script.
 
-:doc:`escindicator`
-`````
+:doc:`jsonpretty` — Demonstrates a status bar component that handles clicks and opens a popover with a web view.
 
-Demonstrates monitoring for keystrokes, custom status bar components, and using variables as a back-channel for communication between parts of a script.
+:doc:`mousemode` — Demonstrates a status bar component that responds to changes in a variable.
 
-:doc:`jsonpretty`
-`````
+:doc:`gmtclock` - Demonstrates a status bar component that shows the current time in the GMT time zone.
 
-Demonstrates a status bar component that handles clicks and opens a popover with a web view.
+----
 
-:doc:`mousemode`
-`````
+**Tmux**
 
-Demonstrates a status bar component that responds to changes in a variable.
+:doc:`tmux` — Demonstrates basic functions of the tmux integration API.
 
------------------------
-Tmux
------------------------
+:doc:`tile` — Demonstrates sending a command to the tmux server in tmux integration mode.
 
-:doc:`tmux`
-````
 
-Demonstrates basic functions of the tmux integration API.
+----
 
-:doc:`tile`
-````
+**Monitoring for Events**
 
-Demonstrates sending a command to the tmux server in tmux integration mode.
+:doc:`random_color` — Demonstrates performing an action when a new session is created and using a color preset.
 
+:doc:`colorhost` — Demonstrates monitoring for different kinds of events concurrently.
 
------------------------
-Monitoring for Events
------------------------
+:doc:`fs-only-status-bar` - Demonstrates monitoring for the creation of windows and the change of window style.
 
-:doc:`random_color`
-````
+:doc:`theme` — Demonstrates monitoring a variable and using color presets.
 
-Demonstrates performing an action when a new session is created and using a color preset.
+:doc:`copycolor` — Demonstrates monitoring for session creation and using color presets.
 
-:doc:`colorhost`
-````
+:doc:`tabtitle` - Demonstrates monitoring for the creation of a new tab. Also demonstrates prompting the user for a string and changing a tab title.
 
-Demonstrates monitoring for different kinds of events concurrently.
+----
 
-:doc:`theme`
-````
+**Profiles and Color Presets**
 
-Demonstrates monitoring a variable and using color presets.
+:doc:`current_preset` — Demonstrates getting a session's profile and querying the list of color presets.
 
-:doc:`copycolor`
-````
+:doc:`blending` — Demonstrates registering a function and adjusting profiles' values.
 
-Demonstrates monitoring for session creation and using color presets.
+:doc:`settabcolor` — Demonstrates changing a session's local profile without updating the underlying profile.
 
+:doc:`increase_font_size` — Demonstrates changing a session's font without updating the underlying profile.
 
------------------------
-Profiles and Color Presets
------------------------
+:doc:`change_default_profile` - Demonstrates changing the default profile.
 
-:doc:`current_preset`
-````
+----
 
-Demonstrates getting a session's profile and querying the list of color presets.
+**Standalone Scripts**
 
-:doc:`blending`
-````
+:doc:`set_title_forever` — Demonstrates setting a session's name. Also demonstrates a script that's meant to be run from the command line that will launch iTerm2 and wait until it's able to connect before proceeding.
 
-Demonstrates registering a function and adjusting profiles' values.
+:doc:`launch_and_run` — Demonstrates launching iTerm2 from the command line (if needed) and creating a new window that runs a command.
 
-:doc:`settabcolor`
-````
+----
 
-Demonstrates changing a session's local profile without updating the underlying profile.
+**Keyboard**
 
+:doc:`function_key_tabs` — Demonstrates changing the behavior of a keystroke.
 
------------------------
-Keyboard
------------------------
 
-:doc:`function_key_tabs`
-````
+----
 
-Demonstrates changing the behavior of a keystroke.
+**Broadcasting Input**
 
+:doc:`enable_broadcasting` — Demonstrates broadcast domains.
 
------------------------
-Broadcasting Input
------------------------
+:doc:`broadcast` — Demonstrates splitting panes, broadcast domains, filtering keystrokes, and sending input.
 
-:doc:`enable_broadcasting`
-````
 
-Demonstrates broadcast domains.
+----
 
-:doc:`broadcast`
-````
+**Windows and Tabs**
 
-Demonstrates splitting panes, broadcast domains, filtering keystrokes, and sending input.
+:doc:`movetab` — Demonstrates moving tabs among windows.
 
+:doc:`sorttabs` — Demonstrates reordering tabs in a window.
 
------------------------
-Windows and Tabs
------------------------
+:doc:`mrutabs` — Demonstrates monitoring for changes in keyboard focus and reordering tabs in a window. This script keeps tabs always in most-recently-used order, so the first tab is always selected.
 
-:doc:`movetab`
-````
+:doc:`mrutabs2` - This script selects the next-most-recently-used tab when the current tab closes. Same for split panes.
 
-Demonstrates moving tabs among windows.
 
-:doc:`sorttabs`
-````
+----
 
-Demonstrates reordering tabs in a window.
+**Asyncio**
 
-:doc:`mrutabs`
-````
+:doc:`close_to_the_right` — Demonstrates asyncio.gather to perform actions in parallel.
 
-Demonstrates monitoring for changes in keyboard focus and reordering tabs in a window.
+:doc:`darknight` — Demonstrates performing an action at a particular time of day.
 
 
------------------------
-Asyncio
------------------------
+----
 
-:doc:`close_to_the_right`
-````
+**Custom Toolbelt Tools**
 
-Demonstrates asyncio.gather to perform actions in parallel.
+:doc:`targeted_input` — Demonstrates custom toolbelt tool, broadcast domains, and sending input.
 
-:doc:`darknight`
-````
 
-Demonstrates performing an action at a particular time of day.
+----
 
+**Selection**
 
------------------------
-Custom Toolbelt Tools
------------------------
-:doc:`targeted_input`
-````
+:doc:`zoom_on_screen` — Demonstrates selecting a menu item and modifying the selection.
 
-Demonstrates custom toolbelt tool, broadcast domains, and sending input.
 
+----
 
------------------------
-Selection
------------------------
+**Other**
 
-:doc:`zoom_on_screen`
-````
+:doc:`cls` — Demonstrates registering a function, injecting a control sequence, and iterating over sessions.
 
-Demonstrates selecting a menu item and modifying the selection.
+:doc:`create_window` — Demonstrates custom control sequences.
 
-
------------------------
-Other
------------------------
-
-:doc:`cls`
-````
-
-Demonstrates registering a function, injecting a control sequence, and iterating over sessions.
-
-:doc:`create_window`
-````
-
-Demonstrates custom control sequences.
-
-:doc:`oneshot`
-````
-
-Demonstrates registering a function and showing a modal alert.
+:doc:`oneshot` — Demonstrates registering a function and showing a modal alert.
 
 
 ----

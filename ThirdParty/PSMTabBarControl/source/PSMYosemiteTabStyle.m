@@ -7,46 +7,14 @@
 //
 
 #import "PSMYosemiteTabStyle.h"
+
+#import "NSColor+PSM.h"
 #import "PSMTabBarCell.h"
 #import "PSMTabBarControl.h"
 #import <objc/runtime.h>
 
 #define kPSMMetalObjectCounterRadius 7.0
 #define kPSMMetalCounterMinWidth 20
-
-@interface NSColor (PSMYosemiteTabStyle)
-
-- (NSColor *)it_srgbForColorInWindow:(NSWindow *)window;
-
-@end
-
-@implementation NSColor (PSMYosemiteTabStyle)
-
-// http://www.nbdtech.com/Blog/archive/2008/04/27/Calculating-the-Perceived-Brightness-of-a-Color.aspx
-// http://alienryderflex.com/hsp.html
-- (NSColor *)it_srgbForColorInWindow:(NSWindow *)window {
-    if ([self isEqual:window.backgroundColor]) {
-        if ([window.effectiveAppearance.name isEqualToString:NSAppearanceNameVibrantDark]) {
-            return [NSColor colorWithSRGBRed:0.25 green:0.25 blue:0.25 alpha:1];
-        } else {
-            return [NSColor colorWithSRGBRed:0.75 green:0.75 blue:0.75 alpha:1];
-        }
-    } else {
-        return [self colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    }
-}
-
-- (CGFloat)it_hspBrightness {
-    NSColor *safeColor = [self colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    const CGFloat r = safeColor.redComponent;
-    const CGFloat g = safeColor.greenComponent;
-    const CGFloat b = safeColor.blueComponent;
-    return sqrt(r * r * .241 +
-                g * g * .691 +
-                b * b * .068);
-}
-
-@end
 
 @interface NSAttributedString(PSM)
 - (NSAttributedString *)attributedStringWithTextAlignment:(NSTextAlignment)textAlignment;
@@ -58,21 +26,27 @@
     if (self.length == 0) {
         return self;
     }
-    NSDictionary *immutableAttributes = [self attributesAtIndex:0 effectiveRange:nil];
+    NSInteger representativeIndex = self.length;
+    representativeIndex = MAX(0, representativeIndex - 1);
+    NSDictionary *immutableAttributes = [self attributesAtIndex:representativeIndex effectiveRange:nil];
     if (!immutableAttributes) {
         return self;
     }
 
-    NSMutableDictionary *attributes = [[immutableAttributes mutableCopy] autorelease];
-    NSMutableParagraphStyle *paragraphStyle = [[attributes[NSParagraphStyleAttributeName] mutableCopy] autorelease];
-    if (!paragraphStyle) {
-        paragraphStyle = [[[NSParagraphStyle defaultParagraphStyle] mutableCopy] autorelease];
-    }
-    paragraphStyle.alignment = textAlignment;
-    NSMutableAttributedString *temp = [[self mutableCopy] autorelease];
-    attributes[NSParagraphStyleAttributeName] = paragraphStyle;
-    [temp setAttributes:attributes range:NSMakeRange(0, temp.length)];
-    return temp;
+    NSMutableAttributedString *mutableCopy = [[self mutableCopy] autorelease];
+    [self enumerateAttributesInRange:NSMakeRange(0, self.length)
+                             options:0
+                          usingBlock:^(NSDictionary<NSAttributedStringKey,id> * _Nonnull attrs, NSRange range, BOOL * _Nonnull stop) {
+                              NSMutableParagraphStyle *paragraphStyle = [[attrs[NSParagraphStyleAttributeName] mutableCopy] autorelease];
+                              if (!paragraphStyle) {
+                                  paragraphStyle = [[[NSParagraphStyle defaultParagraphStyle] mutableCopy] autorelease];
+                              }
+                              paragraphStyle.alignment = textAlignment;
+                              NSMutableDictionary *updatedAttrs = [[attrs mutableCopy] autorelease];
+                              updatedAttrs[NSParagraphStyleAttributeName] = paragraphStyle;
+                              [mutableCopy setAttributes:updatedAttrs range:range];
+                          }];
+    return mutableCopy;
 }
 
 @end
@@ -141,9 +115,9 @@
         _closeButtonOver = [[[NSBundle bundleForClass:self.class] imageForResource:@"TabClose_Front_Rollover"] retain];
 
         // Load "new tab" buttons
-        _addTabButtonImage = [[NSImage alloc] initByReferencingFile:[[PSMTabBarControl bundle] pathForImageResource:@"TabNewMetal"]];
-        _addTabButtonPressedImage = [[NSImage alloc] initByReferencingFile:[[PSMTabBarControl bundle] pathForImageResource:@"TabNewMetalPressed"]];
-        _addTabButtonRolloverImage = [[NSImage alloc] initByReferencingFile:[[PSMTabBarControl bundle] pathForImageResource:@"TabNewMetalRollover"]];
+        _addTabButtonImage = [[NSImage alloc] initByReferencingFile:[[PSMTabBarControl bundle] pathForImageResource:@"YosemiteAddTab"]];
+        _addTabButtonPressedImage = [[NSImage alloc] initByReferencingFile:[[PSMTabBarControl bundle] pathForImageResource:@"YosemiteAddTab"]];
+        _addTabButtonRolloverImage = [[NSImage alloc] initByReferencingFile:[[PSMTabBarControl bundle] pathForImageResource:@"YosemiteAddTab"]];
     }
     return self;
 }
@@ -166,15 +140,22 @@
             [NSApp isActive]);
 }
 
+- (NSAppearance *)accessoryAppearance {
+    return nil;
+}
+
 #pragma mark - Control Specific
 
 - (float)leftMarginForTabBarControl {
     return self.tabBar.insets.left;
 }
 
-- (float)rightMarginForTabBarControl {
-    // Leaves space for overflow control.
-    return 24.0f;
+- (float)rightMarginForTabBarControlWithOverflow:(BOOL)withOverflow
+                                    addTabButton:(BOOL)withAddTabButton {
+    if (withOverflow || withAddTabButton) {
+        return 24.0f;
+    }
+    return 0;
 }
 
 // For vertical orientation
@@ -204,9 +185,7 @@
     dragRect.size.width++;
 
     if ([cell tabState] & PSMTab_SelectedMask) {
-        if (tabOrientation == PSMTabBarHorizontalOrientation) {
-            dragRect.size.height -= 2.0;
-        } else {
+        if (tabOrientation != PSMTabBarHorizontalOrientation) {
             dragRect.size.height += 1.0;
             dragRect.origin.y -= 1.0;
             dragRect.origin.x += 2.0;
@@ -784,10 +763,14 @@
     if (horizontal) {
         BOOL shouldDrawLeftLine;
         if (@available(macOS 10.14, *)) {
-            // Because alpha is less than 1, we don't want to double-draw. I don't think
-            // drawing the left line is necessary in earlier macOS versions either but I
-            // don't feel like adding any risk at the moment.
-            shouldDrawLeftLine = NO;
+            if (isFirst && NSMinX(cellFrame) > 1) {
+                shouldDrawLeftLine = YES;
+            } else {
+                // Because alpha is less than 1, we don't want to double-draw. I don't think
+                // drawing the left line is necessary in earlier macOS versions either but I
+                // don't feel like adding any risk at the moment.
+                shouldDrawLeftLine = NO;
+            }
         } else {
             shouldDrawLeftLine = !isFirst;
         }
@@ -963,27 +946,45 @@
 
     }
 
+    NSAttributedString *attributedString = [cell attributedStringValue];
 
     // icon
+    BOOL drewIcon = NO;
     NSRect iconRect = NSZeroRect;
     if ([cell hasIcon]) {
-        iconRect = [self iconRectForTabCell:cell];
+        // There is an icon. Draw it as long as the amount of space left for the label is more than
+        // the size of the icon. This is a heuristic to roughly prioritize the label over the icon.
+        const CGFloat labelWidth = [self widthForLabelInCell:cell
+                                               labelPosition:labelPosition
+                                                     hasIcon:YES
+                                                    iconRect:iconRect
+                                            attributedString:attributedString
+                                               reservedSpace:reservedSpace
+                                                boundingSize:NULL
+                                                    truncate:NULL];
         NSImage *icon = [(id)[[cell representedObject] identifier] icon];
+        const CGFloat minimumLabelWidth =
+        [[self.tabBar.delegate tabView:self.tabBar
+                         valueOfOption:PSMTabBarControlOptionMinimumSpaceForLabel] doubleValue];
+        if (labelWidth > minimumLabelWidth) {
+            drewIcon = YES;
+            iconRect = [self iconRectForTabCell:cell];
 
-        // center in available space (in case icon image is smaller than kPSMTabBarIconWidth)
-        if ([icon size].width < kPSMTabBarIconWidth) {
-            iconRect.origin.x += (kPSMTabBarIconWidth - [icon size].width)/2.0;
-        }
-        if ([icon size].height < kPSMTabBarIconWidth) {
-            iconRect.origin.y -= (kPSMTabBarIconWidth - [icon size].height)/2.0;
-        }
+            // center in available space (in case icon image is smaller than kPSMTabBarIconWidth)
+            if ([icon size].width < kPSMTabBarIconWidth) {
+                iconRect.origin.x += (kPSMTabBarIconWidth - [icon size].width)/2.0;
+            }
+            if ([icon size].height < kPSMTabBarIconWidth) {
+                iconRect.origin.y -= (kPSMTabBarIconWidth - [icon size].height)/2.0;
+            }
 
-        [icon drawInRect:iconRect
-                fromRect:NSZeroRect
-               operation:NSCompositingOperationSourceOver
-                fraction:1.0
-          respectFlipped:YES
-                   hints:nil];
+            [icon drawInRect:iconRect
+                    fromRect:NSZeroRect
+                   operation:NSCompositingOperationSourceOver
+                    fraction:1.0
+              respectFlipped:YES
+                       hints:nil];
+        }
     }
 
     // object counter
@@ -999,40 +1000,74 @@
     }
 
     // label rect
-    NSAttributedString *attributedString = [cell attributedStringValue];
     if (attributedString.length > 0) {
         NSRect labelRect;
         labelRect.origin.x = labelPosition;
-        labelRect.size.width = cellFrame.size.width - (labelRect.origin.x - cellFrame.origin.x) - kPSMTabBarCellPadding;
-        if ([cell hasIcon]) {
-            // Reduce size of label if there is an icon or activity indicator
-            labelRect.size.width -= iconRect.size.width + kPSMTabBarCellIconPadding;
-        } else if (![[cell indicator] isHidden]) {
-            labelRect.size.width -= cell.indicator.frame.size.width + kPSMTabBarCellIconPadding;
-        }
-        labelRect.size.height = cellFrame.size.height;
-
-        if ([cell count] > 0) {
-            labelRect.size.width -= ([self objectCounterRectForTabCell:cell].size.width + kPSMTabBarCellPadding);
-        }
-
-        NSSize boundingSize = [attributedString boundingRectWithSize:labelRect.size options:0].size;
+        NSSize boundingSize;
+        BOOL truncate;
+        labelRect.size.width = [self widthForLabelInCell:cell
+                                           labelPosition:labelPosition
+                                                 hasIcon:drewIcon
+                                                iconRect:iconRect
+                                        attributedString:attributedString
+                                           reservedSpace:reservedSpace
+                                            boundingSize:&boundingSize
+                                                truncate:&truncate];
         labelRect.origin.y = cellFrame.origin.y + floor((cellFrame.size.height - boundingSize.height) / 2.0);
         labelRect.size.height = boundingSize.height;
 
-        if (_orientation == PSMTabBarHorizontalOrientation) {
-            CGFloat effectiveLeftMargin = (labelRect.size.width - boundingSize.width) / 2;
-            if (effectiveLeftMargin < reservedSpace) {
-                attributedString = [attributedString attributedStringWithTextAlignment:NSTextAlignmentLeft];
-
-                labelRect.origin.x += reservedSpace;
-                labelRect.size.width -= reservedSpace;
-            }
+        if (truncate) {
+            attributedString = [attributedString attributedStringWithTextAlignment:NSTextAlignmentLeft];
+            labelRect.origin.x += reservedSpace;
         }
 
         attributedString = [self truncateAttributedStringIfNeeded:attributedString forWidth:labelRect.size.width];
         [attributedString drawInRect:labelRect];
     }
+}
+
+- (CGFloat)widthForLabelInCell:(PSMTabBarCell *)cell
+                 labelPosition:(CGFloat)labelPosition
+                       hasIcon:(BOOL)drewIcon
+                      iconRect:(NSRect)iconRect
+              attributedString:(NSAttributedString *)attributedString
+                 reservedSpace:(CGFloat)reservedSpace
+                  boundingSize:(NSSize *)boundingSizeOut
+                      truncate:(BOOL *)truncateOut {
+    const NSRect cellFrame = cell.frame;
+    NSRect labelRect = NSMakeRect(labelPosition,
+                                  0,
+                                  cellFrame.size.width - (labelPosition - cellFrame.origin.x) - kPSMTabBarCellPadding,
+                                  cellFrame.size.height);
+    if (drewIcon) {
+        // Reduce size of label if there is an icon or activity indicator
+        labelRect.size.width -= iconRect.size.width + kPSMTabBarCellIconPadding;
+    } else if (![[cell indicator] isHidden]) {
+        labelRect.size.width -= cell.indicator.frame.size.width + kPSMTabBarCellIconPadding;
+    }
+
+    if ([cell count] > 0) {
+        labelRect.size.width -= ([self objectCounterRectForTabCell:cell].size.width + kPSMTabBarCellPadding);
+    }
+
+    NSSize boundingSize = [attributedString boundingRectWithSize:labelRect.size options:0].size;
+
+    BOOL truncate = NO;
+    if (_orientation == PSMTabBarHorizontalOrientation) {
+        CGFloat effectiveLeftMargin = (labelRect.size.width - boundingSize.width) / 2;
+        if (effectiveLeftMargin < reservedSpace) {
+            labelRect.size.width -= reservedSpace;
+            truncate = YES;
+        }
+    }
+    if (truncateOut) {
+        *truncateOut = truncate;
+    }
+
+    if (boundingSizeOut) {
+        *boundingSizeOut = boundingSize;
+    }
+    return labelRect.size.width;
 }
 
 // In the neverending saga of Cocoa embarassing itself, if there isn't enough space for a text
@@ -1152,7 +1187,8 @@
 - (void)drawTabBar:(PSMTabBarControl *)bar
             inRect:(NSRect)rect
           clipRect:(NSRect)clipRect
-        horizontal:(BOOL)horizontal {
+        horizontal:(BOOL)horizontal
+      withOverflow:(BOOL)withOverflow {
     if (_orientation != [bar orientation]) {
         _orientation = [bar orientation];
     }

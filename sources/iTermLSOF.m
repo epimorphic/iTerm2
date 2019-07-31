@@ -123,12 +123,20 @@ int iTermProcPidInfoWrapper(int pid, int flavor, uint64_t arg, void *buffer, int
     while (offset < argmax && argv.count < nargs) {
         if (procargs[offset] == 0) {
             NSString *string = [NSString stringWithUTF8String:start];
-            [argv addObject:[string stringWithEscapedShellCharactersIncludingNewlines:YES]];
+            [argv addObject:[string stringWithEscapedShellCharactersIncludingNewlines:YES] ?: @""];
             start = procargs + offset + 1;
         }
         offset++;
     }
 
+    if (argv.count == 0) {
+        return @"";
+    }
+    NSString *command = argv[0];
+    NSRange lastSlash = [command rangeOfString:@"/" options:NSBackwardsSearch];
+    if (lastSlash.location != NSNotFound) {
+        argv[0] = [command substringFromIndex:lastSlash.location + 1];
+    }
     return [argv componentsJoinedByString:@" "];
 }
 

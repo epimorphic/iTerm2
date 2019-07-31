@@ -8,10 +8,13 @@
 #import "iTermBuiltInFunctions.h"
 
 #import "iTermAlertBuiltInFunction.h"
+#import "iTermReflection.h"
 #import "iTermVariableReference.h"
 #import "NSArray+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSObject+iTerm.h"
+
+#import <objc/runtime.h>
 
 NSString *iTermFunctionSignatureFromNameAndArguments(NSString *name, NSArray<NSString *> *argumentNames) {
     NSString *combinedArguments = [[argumentNames sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","];
@@ -32,10 +35,13 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
 - (nullable NSError *)typeCheckParameters:(NSDictionary<NSString *, id> *)parameters;
 @end
 
-@implementation iTermBuiltInFunction
+@implementation iTermBuiltInFunction {
+    NSSet<NSString *> *_optionalArguments;
+}
 
 - (instancetype)initWithName:(NSString *)name
                    arguments:(NSDictionary<NSString *,Class> *)argumentsAndTypes
+           optionalArguments:(NSSet<NSString *> *)optionalArguments
                defaultValues:(NSDictionary<NSString *,NSString *> *)defaultValues
                      context:(iTermVariablesSuggestionContext)context
                        block:(iTermBuiltInFunctionsExecutionBlock)block {
@@ -45,6 +51,7 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
         _argumentsAndTypes = [argumentsAndTypes copy];
         _defaultValues = [defaultValues copy];
         _block = [block copy];
+        _optionalArguments = [optionalArguments copy];
         [defaultValues enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull key, NSString * _Nonnull obj, BOOL * _Nonnull stop) {
             [iTermVariableHistory recordUseOfVariableNamed:obj inContext:context];
         }];
@@ -62,6 +69,9 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
 - (nullable NSError *)typeCheckParameters:(NSDictionary<NSString *, id> *)parameters {
     for (NSString *name in parameters) {
         Class actual = [parameters[name] class];
+        if ([actual isKindOfClass:[NSNull class]] && [_optionalArguments containsObject:name]) {
+            continue;
+        }
         Class expected = _argumentsAndTypes[name];
         if (!expected) {
             return [self invalidArgumentError:name];
@@ -115,6 +125,7 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
 + (void)registerStandardFunctions {
     [iTermArrayCountBuiltInFunction registerBuiltInFunction];
     [iTermAlertBuiltInFunction registerBuiltInFunction];
+    [iTermGetStringBuiltInFunction registerBuiltInFunction];
 }
 
 + (instancetype)sharedInstance {
@@ -137,6 +148,7 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
 - (void)registerFunction:(iTermBuiltInFunction *)function namespace:(NSString *)namespace {
     NSString *name = namespace ? [NSString stringWithFormat:@"%@.%@", namespace, function.name] : function.name;
     NSString *signature = iTermFunctionSignatureFromNameAndArguments(name, function.argumentsAndTypes.allKeys);
+    assert(!_functions[signature]);
     _functions[signature] = function;
 }
 
@@ -198,7 +210,7 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
         return;
     }
 
-    function.block(amendedParameters, completion);
+    function.block([amendedParameters dictionaryByRemovingNullValues], completion);
 }
 
 - (NSError *)undeclaredIdentifierError:(NSString *)identifier {
@@ -217,23 +229,31 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
                            userInfo:@{ NSLocalizedFailureReasonErrorKey: reason }];
 }
 
+- (iTermBuiltInMethod *)methodWithSignature:(NSString *)signature {
+    return [iTermBuiltInMethod castFrom:_functions[signature]];
+}
+
 @end
 
 @implementation iTermArrayCountBuiltInFunction
 
 + (void)registerBuiltInFunction {
-    NSString *const array = @"array";
-    iTermBuiltInFunction *func =
-    [[iTermBuiltInFunction alloc] initWithName:@"count"
-                                     arguments:@{ array: [NSArray class] }
-                                 defaultValues:@{}
-                                       context:iTermVariablesSuggestionContextNone
-                                         block:
-     ^(NSDictionary * _Nonnull parameters, iTermBuiltInFunctionCompletionBlock  _Nonnull completion) {
-         [self countOfObject:parameters[array] completion:completion];
-     }];
-    [[iTermBuiltInFunctions sharedInstance] registerFunction:func
-                                                   namespace:@"iterm2"];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *const array = @"array";
+        iTermBuiltInFunction *func =
+        [[iTermBuiltInFunction alloc] initWithName:@"count"
+                                         arguments:@{ array: [NSArray class] }
+                                 optionalArguments:[NSSet set]
+                                     defaultValues:@{}
+                                           context:iTermVariablesSuggestionContextNone
+                                             block:
+         ^(NSDictionary * _Nonnull parameters, iTermBuiltInFunctionCompletionBlock  _Nonnull completion) {
+             [self countOfObject:parameters[array] completion:completion];
+         }];
+        [[iTermBuiltInFunctions sharedInstance] registerFunction:func
+                                                       namespace:@"iterm2"];
+    });
 }
 
 + (void)countOfObject:(id)value completion:(iTermBuiltInFunctionCompletionBlock)completion {
@@ -255,6 +275,132 @@ NSString *iTermFunctionNameFromSignature(NSString *signature) {
     }
 
     completion(@(array.count), nil);
+}
+
+@end
+
+@implementation iTermBuiltInMethod {
+    NSArray<iTermReflectionMethodArgument *> *_args;
+    __weak id<iTermObject> _target;
+    SEL _action;
+    NSDictionary<NSString *, Class> *_types;
+    NSSet<NSString *> *_optionalArguments;
+}
+
++ (NSArray<iTermReflectionMethodArgument *> *)argumentsFromTarget:(id<iTermObject>)target
+                                                           action:(SEL)action {
+    iTermReflection *reflection = [[iTermReflection alloc] initWithClass:[(NSObject *)target class] selector:action];
+    return reflection.arguments;
+}
+
++ (NSDictionary<NSString *, Class> *)argumentDictionaryFromArray:(NSArray<iTermReflectionMethodArgument *> *)arguments {
+    __block BOOL foundCompletion = NO;
+    NSMutableDictionary<NSString *, Class> *result = [NSMutableDictionary dictionary];
+    for (iTermReflectionMethodArgument *obj in arguments) {
+        assert(result[obj.argumentName] == nil);
+        
+        switch (obj.type) {
+            case iTermReflectionMethodArgumentTypeObject:
+                result[obj.argumentName] = NSClassFromString(obj.className);
+                break;
+            case iTermReflectionMethodArgumentTypeBlock:
+                if ([obj.argumentName hasSuffix:@"WithCompletion"]) {
+                    foundCompletion = YES;
+                    break;
+                } else {
+                    return nil;
+                }
+            case iTermReflectionMethodArgumentTypeUnknown:
+            case iTermReflectionMethodArgumentTypeVoid:
+            case iTermReflectionMethodArgumentTypeArray:
+            case iTermReflectionMethodArgumentTypeClass:
+            case iTermReflectionMethodArgumentTypeUnion:
+            case iTermReflectionMethodArgumentTypeScalar:
+            case iTermReflectionMethodArgumentTypeStruct:
+            case iTermReflectionMethodArgumentTypePointer:
+            case iTermReflectionMethodArgumentTypeBitField:
+            case iTermReflectionMethodArgumentTypeSelector:
+                // Not legal for built-in methods. They must take only objects and one block named completion.
+                return nil;
+        }
+    }
+    if (!foundCompletion) {
+        return nil;
+    }
+    return result;
+}
+
+- (instancetype)initWithName:(NSString *)name
+               defaultValues:(NSDictionary<NSString *, NSString *> *)defaultValues  // arg name -> variable name
+                       types:(NSDictionary<NSString *, Class> *)types
+           optionalArguments:(NSSet<NSString *> *)optionalArguments
+                     context:(iTermVariablesSuggestionContext)context
+                      target:(id<iTermObject>)target
+                      action:(SEL)action {
+    NSArray<iTermReflectionMethodArgument *> *args = [iTermBuiltInMethod argumentsFromTarget:target action:action];
+    if (!args) {
+        return nil;
+    }
+    NSDictionary<NSString *, Class> *argDict = [iTermBuiltInMethod argumentDictionaryFromArray:args];
+    if (!argDict) {
+        return nil;
+    }
+    self = [super initWithName:name
+                     arguments:argDict
+             optionalArguments:[NSSet set]
+                 defaultValues:defaultValues
+                       context:context
+                         block:^(NSDictionary * _Nonnull parameters, iTermBuiltInFunctionCompletionBlock  _Nonnull completion) {
+                             // Use callWithArguments:completion: instead.
+                             assert(NO);
+                         }];
+    if (self) {
+        _args = [args copy];
+        _action = action;
+        _target = target;
+        _types = [types copy];
+        _optionalArguments = [optionalArguments copy];
+    }
+    return self;
+}
+
+- (void)callWithArguments:(NSDictionary<NSString *, id> *)parameters
+               completion:(iTermBuiltInFunctionCompletionBlock)completion {
+    NSMethodSignature *signature = [[(NSObject *)_target class] instanceMethodSignatureForSelector:_action];
+    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+    invocation.target = _target;
+    invocation.selector = _action;
+    id temp[_args.count];
+    for (NSInteger i = 0; i < _args.count; i++) {
+        iTermReflectionMethodArgument *arg = _args[i];
+        if ([arg.argumentName hasSuffix:@"WithCompletion"]) {
+            temp[i] = [completion copy];
+        } else {
+            assert(parameters[arg.argumentName]);
+            temp[i] = [parameters[arg.argumentName] nilIfNull];
+        }
+        Class requiredClass = _types[arg.argumentName];
+        if (requiredClass) {
+            const BOOL isNull = [parameters[arg.argumentName] isKindOfClass:[NSNull class]];
+            if (isNull &&
+                ![_optionalArguments containsObject:arg.argumentName]) {
+                completion(nil, [self typeMismatchError:arg.argumentName
+                                                 wanted:requiredClass
+                                                    got:nil]);
+                return;
+            }
+            if (!isNull &&
+                ![parameters[arg.argumentName] isKindOfClass:requiredClass]) {
+                Class actualClass = [parameters[arg.argumentName] class];
+                completion(nil, [self typeMismatchError:arg.argumentName
+                                                 wanted:requiredClass
+                                                    got:actualClass]);
+                return;
+            }
+        }
+        [invocation setArgument:&temp[i] atIndex:i + 2];
+    }
+    [invocation invoke];
 }
 
 @end

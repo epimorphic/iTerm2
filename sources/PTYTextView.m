@@ -27,6 +27,7 @@
 #import "iTermQuickLookController.h"
 #import "iTermRateLimitedUpdate.h"
 #import "iTermScrollAccumulator.h"
+#import "iTermSecureKeyboardEntryController.h"
 #import "iTermSelection.h"
 #import "iTermSelectionScrollHelper.h"
 #import "iTermSetFindStringNotification.h"
@@ -34,7 +35,7 @@
 #import "iTermTextDrawingHelper.h"
 #import "iTermTextExtractor.h"
 #import "iTermTextViewAccessibilityHelper.h"
-#import "iTermURLActionFactory.h"
+#import "iTermURLActionHelper.h"
 #import "iTermURLStore.h"
 #import "iTermWebViewWrapperViewController.h"
 #import "iTermWarning.h"
@@ -66,6 +67,8 @@
 #import "PTYScrollView.h"
 #import "PTYTab.h"
 #import "PTYTask.h"
+#import "PTYTextView+ARC.h"
+#import "PTYTextView+Private.h"
 #import "PTYWindow.h"
 #import "RegexKitLite.h"
 #import "SCPPath.h"
@@ -74,7 +77,6 @@
 #import "SmartSelectionController.h"
 #import "SolidColorView.h"
 #import "ThreeFingerTapGestureRecognizer.h"
-#import "URLAction.h"
 #import "VT100RemoteHost.h"
 #import "VT100ScreenMark.h"
 #import "WindowControllerInterface.h"
@@ -110,32 +112,6 @@ static const int kDragThreshold = 3;
 
 @end
 
-@interface PTYTextView () <
-    iTermAltScreenMouseScrollInferrerDelegate,
-    iTermBadgeLabelDelegate,
-    iTermTextViewAccessibilityHelperDelegate,
-    iTermFindCursorViewDelegate,
-    iTermFindOnPageHelperDelegate,
-    iTermKeyboardHandlerDelegate,
-    iTermSelectionDelegate,
-    iTermSelectionScrollHelperDelegate,
-    NSDraggingSource,
-    NSMenuDelegate,
-    NSPopoverDelegate>
-
-@property(nonatomic, retain) iTermSelection *selection;
-@property(nonatomic, retain) iTermSemanticHistoryController *semanticHistoryController;
-@property(nonatomic, retain) iTermFindCursorView *findCursorView;
-@property(nonatomic, retain) NSWindow *findCursorWindow;  // For find-cursor animation
-@property(nonatomic, retain) iTermQuickLookController *quickLookController;
-@property(strong, readwrite, nullable) NSTouchBar *touchBar NS_AVAILABLE_MAC(10_12_2);
-
-// Set when a context menu opens, nilled when it closes. If the data source changes between when we
-// ask the context menu to open and when the main thread enters a tracking runloop, the text under
-// the selection can change. We want to respect what we show while the context menu is open.
-// See issue 4048.
-@property(nonatomic, copy) NSString *savedSelectedText;
-@end
 
 @implementation PTYTextView {
     // -refresh does not want to be reentrant.
@@ -174,9 +150,6 @@ static const int kDragThreshold = 3;
     // Works around an apparent OS bug where we get drag events without a mousedown.
     BOOL dragOk_;
 
-    // Flag to make sure a Semantic History drag check is only one once per drag
-    BOOL _semanticHistoryDragged;
-
     // Saves the monotonically increasing event number of a first-mouse click, which disallows
     // selection.
     NSInteger _firstMouseEventNumber;
@@ -190,7 +163,6 @@ static const int kDragThreshold = 3;
     BOOL _mouseDownIsThreeFingerClick;
 
     PointerController *pointer_;
-    NSCursor *cursor_;
 
     // True while the context menu is being opened.
     BOOL openingContextMenu_;
@@ -234,7 +206,6 @@ static const int kDragThreshold = 3;
 
     BOOL _haveSeenScrollWheelEvent;
     iTermRateLimitedUpdate *_shadowRateLimit;
-    BOOL _committedToDrag;
 }
 
 
@@ -254,7 +225,6 @@ static const int kDragThreshold = 3;
         _colorMap.delegate = self;
 
         _drawingHelper.colorMap = colorMap;
-
         _firstMouseEventNumber = -1;
 
         [self updateMarkedTextAttributes];
@@ -297,6 +267,9 @@ static const int kDragThreshold = 3;
         _semanticHistoryController = [[iTermSemanticHistoryController alloc] init];
         _semanticHistoryController.delegate = self;
         _semanticHistoryDragged = NO;
+
+        _urlActionHelper = [[iTermURLActionHelper alloc] initWithSemanticHistoryController:_semanticHistoryController];
+        _urlActionHelper.delegate = self;
 
         pointer_ = [[PointerController alloc] init];
         pointer_.delegate = self;
@@ -410,7 +383,8 @@ static const int kDragThreshold = 3;
     [_shadowRateLimit release];
     _keyboardHandler.delegate = nil;
     [_keyboardHandler release];
-
+    _urlActionHelper.delegate = nil;
+    [_urlActionHelper release];
     [super dealloc];
 }
 
@@ -445,17 +419,6 @@ static const int kDragThreshold = 3;
 - (NSColor *)defaultTextColor {
     return [_colorMap processedTextColorForTextColor:[_colorMap colorForKey:kColorMapForeground]
                                  overBackgroundColor:[self defaultBackgroundColor]
-                              disableMinimumContrast:NO];
-}
-
-- (NSColor *)selectionBackgroundColor {
-    CGFloat alpha = [self useTransparency] ? 1 - _transparency : 1;
-    return [[_colorMap processedBackgroundColorForBackgroundColor:[_colorMap colorForKey:kColorMapSelection]] colorWithAlphaComponent:alpha];
-}
-
-- (NSColor *)selectedTextColor {
-    return [_colorMap processedTextColorForTextColor:[_colorMap colorForKey:kColorMapSelectedText]
-                                 overBackgroundColor:[self selectionBackgroundColor]
                               disableMinimumContrast:NO];
 }
 
@@ -525,6 +488,8 @@ static const int kDragThreshold = 3;
 }
 
 - (BOOL)resignFirstResponder {
+    DLog(@"resign first responder: reset numTouches to 0");
+    _numTouches = 0;
     if (!self.it_shouldIgnoreFirstResponderChanges) {
         [_altScreenMouseScrollInferrer firstResponderDidChange];
         [self removeUnderline];
@@ -1270,45 +1235,16 @@ static const int kDragThreshold = 3;
 
 - (SmartMatch *)smartSelectAtX:(int)x
                              y:(int)y
-                            to:(VT100GridWindowedRange *)rangePtr
+                            to:(VT100GridWindowedRange *)range
               ignoringNewlines:(BOOL)ignoringNewlines
                 actionRequired:(BOOL)actionRequired
                respectDividers:(BOOL)respectDividers {
-    iTermTextExtractor *extractor = [iTermTextExtractor textExtractorWithDataSource:_dataSource];
-    VT100GridCoord coord = VT100GridCoordMake(x, y);
-    if (respectDividers) {
-        [extractor restrictToLogicalWindowIncludingCoord:coord];
-    }
-    return [extractor smartSelectionAt:coord
-                             withRules:_smartSelectionRules
-                        actionRequired:actionRequired
-                                 range:rangePtr
-                      ignoringNewlines:ignoringNewlines];
-}
-
-- (BOOL)smartSelectAtX:(int)x y:(int)y ignoringNewlines:(BOOL)ignoringNewlines {
-    VT100GridWindowedRange range;
-    SmartMatch *smartMatch = [self smartSelectAtX:x
-                                                y:y
-                                               to:&range
-                                 ignoringNewlines:ignoringNewlines
-                                   actionRequired:NO
-                                  respectDividers:[[iTermController sharedInstance] selectionRespectsSoftBoundaries]];
-
-    [_selection beginSelectionAt:range.coordRange.start
-                            mode:kiTermSelectionModeCharacter
-                          resume:NO
-                          append:NO];
-    [_selection moveSelectionEndpointTo:range.coordRange.end];
-    if (!ignoringNewlines) {
-        // TODO(georgen): iTermSelection doesn't have a mode for smart selection ignoring newlines.
-        // If that flag is set, it's better to leave the selection in character mode because you can
-        // still extend a selection with shift-click. If we put it in smart mode, extending would
-        // get confused.
-        _selection.selectionMode = kiTermSelectionModeSmart;
-    }
-    [_selection endLiveSelection];
-    return smartMatch != nil;
+    return [_urlActionHelper smartSelectAtX:x
+                                          y:y
+                                         to:range
+                           ignoringNewlines:ignoringNewlines
+                             actionRequired:actionRequired
+                            respectDividers:respectDividers];
 }
 
 // Control-pgup and control-pgdown are handled at this level by NSWindow if no
@@ -1325,7 +1261,7 @@ static const int kDragThreshold = 3;
     }
     unichar unmodunicode = [unmodkeystr length] > 0 ? [unmodkeystr characterAtIndex:0] : 0;
 
-    NSUInteger modifiers = [theEvent modifierFlags];
+    NSUInteger modifiers = [theEvent it_modifierFlags];
     if ((modifiers & NSEventModifierFlagControl) &&
         (modifiers & NSEventModifierFlagFunction)) {
         switch (unmodunicode) {
@@ -1359,28 +1295,6 @@ static const int kDragThreshold = 3;
     return _keyboardHandler.keyIsARepeat;
 }
 
-// WARNING: This indicates if mouse reporting is a possibility. -terminalWantsMouseReports indicates
-// if the reporting mode would cause any action to be taken if this returns YES. They should be used
-// in conjunction most of the time.
-- (BOOL)xtermMouseReporting {
-    NSEvent *event = [NSApp currentEvent];
-    return (([[self delegate] xtermMouseReporting]) &&        // Xterm mouse reporting is on
-            !([event modifierFlags] & NSEventModifierFlagOption));   // Not holding Opt to disable mouse reporting
-}
-
-- (BOOL)xtermMouseReportingAllowMouseWheel {
-    return [[self delegate] xtermMouseReportingAllowMouseWheel];
-}
-
-// If mouse reports are sent to the delegate, will it use them? Use with -xtermMouseReporting, which
-// understands Option to turn off reporting.
-- (BOOL)terminalWantsMouseReports {
-    MouseMode mouseMode = [[_dataSource terminal] mouseMode];
-    return ([_delegate xtermMouseReporting] &&
-            mouseMode != MOUSE_REPORTING_NONE &&
-            mouseMode != MOUSE_REPORTING_HIGHLIGHT);
-}
-
 // TODO: disable other, right mouse for inactive panes
 - (void)otherMouseDown:(NSEvent *)event {
     [_altScreenMouseScrollInferrer nonScrollWheelEvent:event];
@@ -1389,6 +1303,10 @@ static const int kDragThreshold = 3;
     [pointer_ mouseDown:event
             withTouches:_numTouches
            ignoreOption:[self terminalWantsMouseReports]];
+}
+
+- (void)updateCursor:(NSEvent *)event {
+    [self updateCursor:event action:nil];
 }
 
 - (void)otherMouseUp:(NSEvent *)event
@@ -1473,7 +1391,7 @@ static const int kDragThreshold = 3;
         // Prefer to report the scroll than to send arrow keys in this mouse reporting mode.
         return NO;
     }
-    if (event.modifierFlags & NSEventModifierFlagOption) {
+    if (event.it_modifierFlags & NSEventModifierFlagOption) {
         // Hold alt to disable sending arrow keys.
         return NO;
     }
@@ -1494,8 +1412,8 @@ static const int kDragThreshold = 3;
 
     if ([iTermAdvancedSettingsModel alternateMouseScroll]) {
         *forceLatin1 = YES;
-        NSData *data = down ? [_dataSource.terminal.output keyArrowDown:event.modifierFlags] :
-                              [_dataSource.terminal.output keyArrowUp:event.modifierFlags];
+        NSData *data = down ? [_dataSource.terminal.output keyArrowDown:event.it_modifierFlags] :
+                              [_dataSource.terminal.output keyArrowUp:event.it_modifierFlags];
         return [[[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding] autorelease];
     } else {
         *forceLatin1 = NO;
@@ -1545,51 +1463,6 @@ static const int kDragThreshold = 3;
     }
 }
 
-- (BOOL)setCursor:(NSCursor *)cursor {
-    if (cursor == cursor_) {
-        return NO;
-    }
-    [cursor_ autorelease];
-    cursor_ = [cursor retain];
-    return YES;
-}
-
-- (BOOL)mouseIsOverImageInEvent:(NSEvent *)event {
-    NSPoint point = [self clickPoint:event allowRightMarginOverflow:NO];
-    return [self imageInfoAtCoord:VT100GridCoordMake(point.x, point.y)] != nil;
-}
-
-- (void)updateCursor:(NSEvent *)event {
-    [self updateCursor:event action:nil];
-}
-
-- (void)updateCursor:(NSEvent *)event action:(URLAction *)action {
-    NSString *hover = nil;
-    BOOL changed = NO;
-    if (([event modifierFlags] & kDragPaneModifiers) == kDragPaneModifiers) {
-        changed = [self setCursor:[NSCursor openHandCursor]];
-    } else if (([event modifierFlags] & kRectangularSelectionModifierMask) == kRectangularSelectionModifiers) {
-        changed = [self setCursor:[NSCursor crosshairCursor]];
-    } else if (action &&
-               ([event modifierFlags] & (NSEventModifierFlagOption | NSEventModifierFlagCommand)) == NSEventModifierFlagCommand) {
-        changed = [self setCursor:[NSCursor pointingHandCursor]];
-        if (action.hover && action.string.length) {
-            hover = action.string;
-        }
-    } else if ([self mouseIsOverImageInEvent:event]) {
-        changed = [self setCursor:[NSCursor arrowCursor]];
-    } else if ([self xtermMouseReporting] &&
-               [self terminalWantsMouseReports]) {
-        changed = [self setCursor:[iTermMouseCursor mouseCursorOfType:iTermMouseCursorTypeIBeamWithCircle]];
-    } else {
-        changed = [self setCursor:[iTermMouseCursor mouseCursorOfType:iTermMouseCursorTypeIBeam]];
-    }
-    if (changed) {
-        [self.enclosingScrollView setDocumentCursor:cursor_];
-    }
-    [_delegate textViewShowHoverURL:hover];
-}
-
 - (BOOL)hasUnderline {
     return _drawingHelper.underlinedRange.coordRange.start.x >= 0;
 }
@@ -1604,59 +1477,8 @@ static const int kDragThreshold = 3;
     [self setNeedsDisplay:YES];  // It would be better to just display the underlined/formerly underlined area.
 }
 
-// Update range of underlined chars indicating cmd-clickable url.
-- (URLAction *)updateUnderlinedURLs:(NSEvent *)event {
-    URLAction *action = nil;
-    if (([event modifierFlags] & NSEventModifierFlagCommand) && (self.window.isKeyWindow ||
-                                                       [iTermAdvancedSettingsModel cmdClickWhenInactiveInvokesSemanticHistory])) {
-        NSPoint screenPoint = [NSEvent mouseLocation];
-        NSRect windowRect = [[self window] convertRectFromScreen:NSMakeRect(screenPoint.x,
-                                                                            screenPoint.y,
-                                                                            0,
-                                                                            0)];
-        NSPoint locationInTextView = [self convertPoint:windowRect.origin fromView: nil];
-        if (!NSPointInRect(locationInTextView, [self bounds])) {
-            [self removeUnderline];
-            return action;
-        }
-        NSPoint viewPoint = [self windowLocationToRowCol:windowRect.origin allowRightMarginOverflow:NO];
-        int x = viewPoint.x;
-        int y = viewPoint.y;
-        if (![iTermPreferences boolForKey:kPreferenceKeyCmdClickOpensURLs] || y < 0) {
-            [self removeUnderline];
-            return action;
-        } else {
-            action = [self urlActionForClickAtX:x
-                                              y:y
-                         respectingHardNewlines:![self ignoreHardNewlinesInURLs]];
-            if (action) {
-                if ([iTermAdvancedSettingsModel enableUnderlineSemanticHistoryOnCmdHover]) {
-                    _drawingHelper.underlinedRange = VT100GridAbsWindowedRangeFromRelative(action.range, [_dataSource totalScrollbackOverflow]);
-                }
-
-                if (action.actionType == kURLActionOpenURL) {
-                    NSURL *url = [NSURL URLWithUserSuppliedString:action.string];
-                    if (url && url.host) {
-                        [self setNeedsDisplay:YES];
-                    }
-                }
-            } else {
-                [self removeUnderline];
-                return action;
-            }
-        }
-    } else {
-        [self removeUnderline];
-        return action;
-    }
-
-    [self setNeedsDisplay:YES];  // It would be better to just display the underlined/formerly underlined area.
-    return action;
-}
-
 - (void)flagsChanged:(NSEvent *)theEvent {
-    URLAction *action = [self updateUnderlinedURLs:theEvent];
-    [self updateCursor:theEvent action:action];
+    [self updateUnderlinedURLs:theEvent];
     NSString *string = [_keyboardHandler.keyMapper keyMapperStringForPreCocoaEvent:theEvent];
     if (string) {
         [_delegate insertText:string];
@@ -1715,6 +1537,7 @@ static const int kDragThreshold = 3;
         for (int i = 0; i < _keyFocusStolenCount; i++) {
             [self releaseKeyFocus];
         }
+        [[iTermSecureKeyboardEntryController sharedInstance] didReleaseFocus];
         _keyFocusStolenCount = 0;
         [self setNeedsDisplay:YES];
     }
@@ -1733,11 +1556,14 @@ static const int kDragThreshold = 3;
         [iTermPreferences boolForKey:kPreferenceKeyFocusFollowsMouse]) {
         DLog(@"Trying to steal key focus");
         if ([self stealKeyFocus]) {
+            if (_keyFocusStolenCount == 0) {
+                [[iTermSecureKeyboardEntryController sharedInstance] didStealFocus];
+            }
             ++_keyFocusStolenCount;
             [self setNeedsDisplay:YES];
         }
     }
-    [self updateCursor:event action:[self updateUnderlinedURLs:event]];
+    [self updateUnderlinedURLs:event];
     if ([iTermPreferences boolForKey:kPreferenceKeyFocusFollowsMouse] &&
         [[self window] alphaValue] > 0 &&
         ![NSApp modalWindow]) {
@@ -1768,57 +1594,6 @@ static const int kDragThreshold = 3;
             DLog(@"%p Refusing first responder on enter", self);
         }
     }
-}
-
-- (NSPoint)pointForCoord:(VT100GridCoord)coord {
-    return NSMakePoint([iTermAdvancedSettingsModel terminalMargin] + coord.x * _charWidth,
-                       coord.y * _lineHeight);
-}
-
-- (VT100GridCoord)coordForPointInWindow:(NSPoint)point {
-    // TODO: Merge this function with windowLocationToRowCol.
-    NSPoint p = [self windowLocationToRowCol:point allowRightMarginOverflow:NO];
-    return VT100GridCoordMake(p.x, p.y);
-}
-
-// TODO: this should return a VT100GridCoord but it confusingly returns an NSPoint.
-//
-// If allowRightMarginOverflow is YES then the returned value's x coordinate may be equal to
-// dataSource.width. If NO, then it will always be less than dataSource.width.
-- (NSPoint)windowLocationToRowCol:(NSPoint)locationInWindow
-         allowRightMarginOverflow:(BOOL)allowRightMarginOverflow {
-    NSPoint locationInTextView = [self convertPoint:locationInWindow fromView: nil];
-
-    VT100GridCoord coord = [self coordForPoint:locationInTextView allowRightMarginOverflow:allowRightMarginOverflow];
-    return NSMakePoint(coord.x, coord.y);
-}
-
-- (VT100GridCoord)coordForPoint:(NSPoint)locationInTextView allowRightMarginOverflow:(BOOL)allowRightMarginOverflow {
-    int x, y;
-    int width = [_dataSource width];
-
-    x = (locationInTextView.x - [iTermAdvancedSettingsModel terminalMargin] + _charWidth * [iTermAdvancedSettingsModel fractionOfCharacterSelectingNextNeighbor]) / _charWidth;
-    if (x < 0) {
-        x = 0;
-    }
-    y = locationInTextView.y / _lineHeight;
-
-    int limit;
-    if (allowRightMarginOverflow) {
-        limit = width;
-    } else {
-        limit = width - 1;
-    }
-    x = MIN(x, limit);
-    y = MIN(y, [_dataSource numberOfLines] - 1);
-
-    return VT100GridCoordMake(x, y);
-}
-
-- (NSPoint)clickPoint:(NSEvent *)event allowRightMarginOverflow:(BOOL)allowRightMarginOverflow {
-    NSPoint locationInWindow = [event locationInWindow];
-    return [self windowLocationToRowCol:locationInWindow
-               allowRightMarginOverflow:allowRightMarginOverflow];
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -1871,10 +1646,10 @@ static const int kDragThreshold = 3;
 - (BOOL)mouseDownImpl:(NSEvent*)event {
     DLog(@"mouseDownImpl: called");
     _mouseDownWasFirstMouse = ([event eventNumber] == _firstMouseEventNumber) || ![NSApp keyWindow];
-    const BOOL altPressed = ([event modifierFlags] & NSEventModifierFlagOption) != 0;
-    BOOL cmdPressed = ([event modifierFlags] & NSEventModifierFlagCommand) != 0;
-    const BOOL shiftPressed = ([event modifierFlags] & NSEventModifierFlagShift) != 0;
-    const BOOL ctrlPressed = ([event modifierFlags] & NSEventModifierFlagControl) != 0;
+    const BOOL altPressed = ([event it_modifierFlags] & NSEventModifierFlagOption) != 0;
+    BOOL cmdPressed = ([event it_modifierFlags] & NSEventModifierFlagCommand) != 0;
+    const BOOL shiftPressed = ([event it_modifierFlags] & NSEventModifierFlagShift) != 0;
+    const BOOL ctrlPressed = ([event it_modifierFlags] & NSEventModifierFlagControl) != 0;
     if (gDebugLogging && altPressed && cmdPressed && shiftPressed && ctrlPressed) {
         // Dump view hierarchy
         NSBeep();
@@ -1906,7 +1681,7 @@ static const int kDragThreshold = 3;
     [pointer_ notifyLeftMouseDown];
     _mouseDownIsThreeFingerClick = NO;
     DLog(@"mouseDownImpl - set mouseDownIsThreeFingerClick=NO");
-    if (([event modifierFlags] & kDragPaneModifiers) == kDragPaneModifiers) {
+    if (([event it_modifierFlags] & kDragPaneModifiers) == kDragPaneModifiers) {
         [_delegate textViewBeginDrag];
         DLog(@"Returning because of drag starting");
         return NO;
@@ -1953,7 +1728,7 @@ static const int kDragThreshold = 3;
             cmdPressed = [iTermAdvancedSettingsModel cmdClickWhenInactiveInvokesSemanticHistory];
         }
     }
-    if (([event modifierFlags] & kDragPaneModifiers) == kDragPaneModifiers) {
+    if (([event it_modifierFlags] & kDragPaneModifiers) == kDragPaneModifiers) {
         DLog(@"Returning because of drag modifiers.");
         return YES;
     }
@@ -2002,7 +1777,7 @@ static const int kDragThreshold = 3;
     } else if (clickCount < 2) {
         // single click
         iTermSelectionMode mode;
-        if ((event.modifierFlags & kRectangularSelectionModifierMask) == kRectangularSelectionModifiers) {
+        if ((event.it_modifierFlags & kRectangularSelectionModifierMask) == kRectangularSelectionModifiers) {
             mode = kiTermSelectionModeBox;
         } else {
             mode = kiTermSelectionModeCharacter;
@@ -2084,15 +1859,17 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     if ([threeFingerTapGestureRecognizer_ mouseUp:event]) {
         return;
     }
-    DLog(@"Mouse Up on %@ with event %@, numTouches=%d", self, event, _numTouches);
+    int numTouches = _numTouches;
+    _numTouches = 0;
+    DLog(@"Mouse Up on %@ with event %@, numTouches=%d. Resetting _numTouches to 0.", self, event, numTouches);
     _firstMouseEventNumber = -1;  // Synergy seems to interfere with event numbers, so reset it here.
     if (_mouseDownIsThreeFingerClick) {
         [self emulateThirdButtonPressDown:NO withEvent:event];
         DLog(@"Returning from mouseUp because mouse-down was a 3-finger click");
         return;
-    } else if (_numTouches == 3 && mouseDown) {
+    } else if (numTouches == 3 && mouseDown) {
         // Three finger tap is valid but not emulating middle button
-        [pointer_ mouseUp:event withTouches:_numTouches];
+        [pointer_ mouseUp:event withTouches:numTouches];
         _mouseDown = NO;
         DLog(@"Returning from mouseUp because there were 3 touches. Set mouseDown=NO");
         return;
@@ -2100,11 +1877,11 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     dragOk_ = NO;
     _semanticHistoryDragged = NO;
     if ([pointer_ eventEmulatesRightClick:event]) {
-        [pointer_ mouseUp:event withTouches:_numTouches];
+        [pointer_ mouseUp:event withTouches:numTouches];
         DLog(@"Returning from mouseUp because we'e emulating a right click.");
         return;
     }
-    const BOOL cmdActuallyPressed = (([event modifierFlags] & NSEventModifierFlagCommand) != 0);
+    const BOOL cmdActuallyPressed = (([event it_modifierFlags] & NSEventModifierFlagCommand) != 0);
     // Make an exception to the first-mouse rule when cmd-click is set to always invoke
     // semantic history.
     const BOOL cmdPressed = cmdActuallyPressed && (!_mouseDownWasFirstMouse ||
@@ -2122,10 +1899,10 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
 
     BOOL isUnshiftedSingleClick = ([event clickCount] < 2 &&
                                    !mouseDragged &&
-                                   !([event modifierFlags] & NSEventModifierFlagShift));
+                                   !([event it_modifierFlags] & NSEventModifierFlagShift));
     BOOL isShiftedSingleClick = ([event clickCount] == 1 &&
                                  !mouseDragged &&
-                                 ([event modifierFlags] & NSEventModifierFlagShift));
+                                 ([event it_modifierFlags] & NSEventModifierFlagShift));
     BOOL willFollowLink = (isUnshiftedSingleClick &&
                            cmdPressed &&
                            [iTermPreferences boolForKey:kPreferenceKeyCmdClickOpensURLs]);
@@ -2146,7 +1923,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
             // alt-click and then open the link. Note that cmd-alt-click isn't handled here
             // because you won't get here if alt is pressed. Note that openTargetWithEvent:
             // may not do anything if the pointer isn't over a clickable string.
-            [self openTargetWithEvent:event];
+            [_urlActionHelper openTargetWithEvent:event inBackground:NO];
         }
         DLog(@"Returning from mouseUp because the mouse event was reported.");
         return;
@@ -2173,7 +1950,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         // Just a click in the window.
         DLog(@"is a click in the window");
 
-        BOOL altPressed = ([event modifierFlags] & NSEventModifierFlagOption) != 0;
+        BOOL altPressed = ([event it_modifierFlags] & NSEventModifierFlagOption) != 0;
         if (altPressed &&
             [iTermPreferences boolForKey:kPreferenceKeyOptionClickMovesCursor] &&
             !_mouseDownWasFirstMouse) {
@@ -2206,11 +1983,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
             [_selection clearSelection];
         }
         if (willFollowLink) {
-            if (altPressed) {
-                [self openTargetInBackgroundWithEvent:event];
-            } else {
-                [self openTargetWithEvent:event];
-            }
+            [_urlActionHelper openTargetWithEvent:event inBackground:altPressed];
         } else {
             NSPoint clickPoint = [self clickPoint:event allowRightMarginOverflow:NO];
             [_findOnPageHelper setStartPoint:VT100GridAbsCoordMake(clickPoint.x,
@@ -2256,9 +2029,8 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
 
 - (void)mouseMoved:(NSEvent *)event {
     [self resetMouseLocationToRefuseFirstResponderAt];
-    URLAction *action = [self updateUnderlinedURLs:event];
+    [self updateUnderlinedURLs:event];
     [self reportMouseEvent:event];
-    [self updateCursor:event action:action];
 }
 
 - (void)mouseDragged:(NSEvent *)event {
@@ -2303,7 +2075,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     }
     [self removeUnderline];
 
-    BOOL pressingCmdOnly = ([event modifierFlags] & (NSEventModifierFlagOption | NSEventModifierFlagCommand)) == NSEventModifierFlagCommand;
+    BOOL pressingCmdOnly = ([event it_modifierFlags] & (NSEventModifierFlagOption | NSEventModifierFlagCommand)) == NSEventModifierFlagCommand;
     if (!pressingCmdOnly || dragThresholdMet) {
         DLog(@"mousedragged = yes");
         _mouseDragged = YES;
@@ -2312,7 +2084,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
 
     // It's ok to drag if Cmd is not required to be pressed or Cmd is pressed.
     BOOL okToDrag = (![iTermAdvancedSettingsModel requireCmdForDraggingText] ||
-                     ([event modifierFlags] & NSEventModifierFlagCommand));
+                     ([event it_modifierFlags] & NSEventModifierFlagCommand));
     if (okToDrag) {
         if (_mouseDownOnImage && dragThresholdMet) {
             _committedToDrag = YES;
@@ -2338,7 +2110,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         return;
     }
     if (_mouseDownOnSelection == YES &&
-        ([event modifierFlags] & (NSEventModifierFlagOption | NSEventModifierFlagCommand)) == (NSEventModifierFlagOption | NSEventModifierFlagCommand) &&
+        ([event it_modifierFlags] & (NSEventModifierFlagOption | NSEventModifierFlagCommand)) == (NSEventModifierFlagOption | NSEventModifierFlagCommand) &&
         !dragThresholdMet) {
         // Would be a drag of a rect region but mouse hasn't moved far enough yet. Prevent the
         // selection from changing.
@@ -2347,46 +2119,8 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     }
 
     if (![_selection hasSelection] && pressingCmdOnly && _semanticHistoryDragged == NO) {
-        DLog(@"do semantic history check");
-        // Only one Semantic History check per drag
-        _semanticHistoryDragged = YES;
-
-        // Drag a file handle (only possible when there is no selection).
-        URLAction *action = [self urlActionForClickAtX:x y:y];
-        NSString *path = action.fullPath;
-        if (path == nil) {
-            DLog(@"path is nil");
-            return;
-        }
-
-        NSPoint dragPosition;
-        NSImage *dragImage;
-
-        dragImage = [[NSWorkspace sharedWorkspace] iconForFile:path];
-        dragPosition = [self convertPoint:[event locationInWindow] fromView:nil];
-        dragPosition.x -= [dragImage size].width / 2;
-
-        NSURL *url = [NSURL fileURLWithPath:path];
-
-        NSPasteboardItem *pbItem = [[[NSPasteboardItem alloc] init] autorelease];
-        [pbItem setString:[url absoluteString] forType:(NSString *)kUTTypeFileURL];
-        NSDraggingItem *dragItem = [[[NSDraggingItem alloc] initWithPasteboardWriter:pbItem] autorelease];
-        [dragItem setDraggingFrame:NSMakeRect(dragPosition.x, dragPosition.y, dragImage.size.width, dragImage.size.height)
-                          contents:dragImage];
-        NSDraggingSession *draggingSession = [self beginDraggingSessionWithItems:@[ dragItem ]
-                                                                           event:event
-                                                                          source:self];
-
-        draggingSession.animatesToStartingPositionsOnCancelOrFail = YES;
-        draggingSession.draggingFormation = NSDraggingFormationNone;
-        _committedToDrag = YES;
-
-        // Valid drag, so we reset the flag because mouseUp doesn't get called when a drag is done
-        _semanticHistoryDragged = NO;
-        DLog(@"did semantic history drag");
-
+        [self handleSemanticHistoryItemDragWithEvent:event coord:VT100GridCoordMake(x, y)];
         return;
-
     }
 
     [_selectionScrollHelper mouseDraggedTo:locationInTextView coord:VT100GridCoordMake(x, y)];
@@ -2408,147 +2142,36 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     [self pasteSelection:nil];
 }
 
-- (void)_openTargetWithEvent:(NSEvent *)event inBackground:(BOOL)openInBackground {
-    // Command click in place.
-    NSPoint clickPoint = [self clickPoint:event allowRightMarginOverflow:NO];
-    int x = clickPoint.x;
-    int y = clickPoint.y;
-    iTermTextExtractor *extractor = [iTermTextExtractor textExtractorWithDataSource:_dataSource];
-    VT100GridCoord coord = VT100GridCoordMake(x, y);
-
-    URLAction *action = [self urlActionForClickAtX:x y:y];
-    DLog(@"openTargetWithEvent has action=%@", action);
-    if (action) {
-        switch (action.actionType) {
-            case kURLActionOpenExistingFile: {
-                NSString *extendedPrefix = [extractor wrappedStringAt:coord
-                                                              forward:NO
-                                                  respectHardNewlines:![self ignoreHardNewlinesInURLs]
-                                                             maxChars:[iTermAdvancedSettingsModel maxSemanticHistoryPrefixOrSuffix]
-                                                    continuationChars:nil
-                                                  convertNullsToSpace:YES
-                                                               coords:nil];
-                NSString *extendedSuffix = [extractor wrappedStringAt:coord
-                                                              forward:YES
-                                                  respectHardNewlines:![self ignoreHardNewlinesInURLs]
-                                                             maxChars:[iTermAdvancedSettingsModel maxSemanticHistoryPrefixOrSuffix]
-                                                    continuationChars:nil
-                                                  convertNullsToSpace:YES
-                                                               coords:nil];
-                if (![self openSemanticHistoryPath:action.fullPath
-                                     orRawFilename:action.rawFilename
-                                  workingDirectory:action.workingDirectory
-                                        lineNumber:action.lineNumber
-                                      columnNumber:action.columnNumber
-                                            prefix:extendedPrefix
-                                            suffix:extendedSuffix]) {
-                    [self findUrlInString:action.string andOpenInBackground:openInBackground];
-                }
-                break;
-            }
-            case kURLActionOpenURL: {
-                NSURL *url = [NSURL URLWithUserSuppliedString:action.string];
-                if ([url.scheme isEqualToString:@"file"] &&
-                    url.host.length > 0 &&
-                    ![url.host isEqualToString:[[iTermLocalHostNameGuesser sharedInstance] name]]) {
-                    SCPPath *path = [[[SCPPath alloc] init] autorelease];
-                    path.path = url.path;
-                    path.hostname = url.host;
-                    path.username = [PTYTextView usernameToDownloadFileOnHost:url.host];
-                    if (path.username == nil) {
-                        return;
-                    }
-                    [self downloadFileAtSecureCopyPath:path
-                                           displayName:url.path.lastPathComponent
-                                        locationInView:action.range.coordRange];
-                } else {
-                    [self openURL:url inBackground:openInBackground];
-                }
-                break;
-            }
-
-            case kURLActionSmartSelectionAction: {
-                DLog(@"Run smart selection selector %@", NSStringFromSelector(action.selector));
-                [self performSelector:action.selector withObject:action];
-                break;
-            }
-
-            case kURLActionOpenImage:
-                DLog(@"Open image");
-                [[NSWorkspace sharedWorkspace] openFile:[(iTermImageInfo *)action.identifier nameForNewSavedTempFile]];
-                break;
-
-            case kURLActionSecureCopyFile:
-                DLog(@"Secure copy file.");
-                [self downloadFileAtSecureCopyPath:action.identifier
-                                       displayName:action.string
-                                    locationInView:action.range.coordRange];
-                break;
-        }
-    }
-}
-
-- (BOOL)openSemanticHistoryPath:(NSString *)path
+- (void)openSemanticHistoryPath:(NSString *)path
                   orRawFilename:(NSString *)rawFileName
                workingDirectory:(NSString *)workingDirectory
                      lineNumber:(NSString *)lineNumber
                    columnNumber:(NSString *)columnNumber
                          prefix:(NSString *)prefix
-                         suffix:(NSString *)suffix {
-    NSDictionary *subs = [self semanticHistorySubstitutionsWithPrefix:prefix
-                                                               suffix:suffix
-                                                                 path:path
-                                                     workingDirectory:workingDirectory];
-    return [self.semanticHistoryController openPath:path
-                                      orRawFilename:rawFileName
-                                      substitutions:subs
-                                         lineNumber:lineNumber
-                                       columnNumber:columnNumber];
-}
-
-- (NSDictionary *)semanticHistorySubstitutionsWithPrefix:(NSString *)prefix
-                                                  suffix:(NSString *)suffix
-                                                    path:(NSString *)path
-                                        workingDirectory:(NSString *)workingDirectory {
-    NSMutableDictionary *subs = [[[_delegate textViewVariables] mutableCopy] autorelease];
-    NSDictionary *semanticHistorySubs =
-        @{ kSemanticHistoryPrefixSubstitutionKey: [prefix stringWithEscapedShellCharactersIncludingNewlines:YES] ?: @"",
-           kSemanticHistorySuffixSubstitutionKey: [suffix stringWithEscapedShellCharactersIncludingNewlines:YES] ?: @"",
-           kSemanticHistoryPathSubstitutionKey: [path stringWithEscapedShellCharactersIncludingNewlines:YES] ?: @"",
-           kSemanticHistoryWorkingDirectorySubstitutionKey: [workingDirectory stringWithEscapedShellCharactersIncludingNewlines:YES] ?: @"" };
-    [subs addEntriesFromDictionary:semanticHistorySubs];
-    return subs;
+                         suffix:(NSString *)suffix
+                     completion:(void (^)(BOOL))completion {
+    [_urlActionHelper openSemanticHistoryPath:path
+                                orRawFilename:rawFileName
+                             workingDirectory:workingDirectory
+                                   lineNumber:lineNumber
+                                 columnNumber:columnNumber
+                                       prefix:prefix
+                                       suffix:suffix
+                                   completion:completion];
 }
 
 - (void)openTargetWithEvent:(NSEvent *)event {
-    [self _openTargetWithEvent:event inBackground:NO];
+    [_urlActionHelper openTargetWithEvent:event inBackground:NO];
 }
 
 - (void)openTargetInBackgroundWithEvent:(NSEvent *)event {
-    [self _openTargetWithEvent:event inBackground:YES];
-}
-
-- (void)smartSelectWithEvent:(NSEvent *)event {
-    NSPoint clickPoint = [self clickPoint:event allowRightMarginOverflow:NO];
-    int x = clickPoint.x;
-    int y = clickPoint.y;
-
-    [self smartSelectAtX:x y:y ignoringNewlines:NO];
+    [_urlActionHelper openTargetWithEvent:event inBackground:YES];
 }
 
 - (void)smartSelectAndMaybeCopyWithEvent:(NSEvent *)event
                         ignoringNewlines:(BOOL)ignoringNewlines {
-    NSPoint clickPoint = [self clickPoint:event allowRightMarginOverflow:NO];
-    int x = clickPoint.x;
-    int y = clickPoint.y;
-
-    [self smartSelectAtX:x y:y ignoringNewlines:ignoringNewlines];
-    if ([_selection hasSelection] && _delegate) {
-        // if we want to copy our selection, do so
-        if ([iTermPreferences boolForKey:kPreferenceKeySelectionCopiesText]) {
-            [self copySelectionAccordingToUserPreferences];
-        }
-    }
+    [_urlActionHelper smartSelectAndMaybeCopyWithEvent:event
+                                      ignoringNewlines:ignoringNewlines];
 }
 
 // Called for a right click that isn't control+click (e.g., two fingers on trackpad).
@@ -2589,7 +2212,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         // Didn't click on selection.
         // Save the selection and do a smart selection. If we don't like the result, restore it.
         iTermSelection *savedSelection = [[_selection copy] autorelease];
-        [self smartSelectWithEvent:event];
+        [_urlActionHelper smartSelectWithEvent:event];
         NSCharacterSet *nonWhiteSpaceSet = [[NSCharacterSet whitespaceAndNewlineCharacterSet] invertedSet];
         NSString *text = [self selectedText];
         if (!text ||
@@ -2630,120 +2253,8 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     }
 }
 
-- (void)showDefinitionForWordAt:(NSPoint)clickPoint {
-    if (clickPoint.y < 0) {
-        return;
-    }
-    iTermTextExtractor *extractor = [iTermTextExtractor textExtractorWithDataSource:_dataSource];
-    VT100GridWindowedRange range =
-        [extractor rangeForWordAt:VT100GridCoordMake(clickPoint.x, clickPoint.y)
-                    maximumLength:kReasonableMaximumWordLength];
-    NSAttributedString *word = [extractor contentInRange:range
-                                       attributeProvider:^NSDictionary *(screen_char_t theChar) {
-                                           return [self charAttributes:theChar];
-                                       }
-                                              nullPolicy:kiTermTextExtractorNullPolicyMidlineAsSpaceIgnoreTerminal
-                                                     pad:NO
-                                      includeLastNewline:NO
-                                  trimTrailingWhitespace:YES
-                                            cappedAtSize:_dataSource.width
-                                            truncateTail:YES
-                                       continuationChars:nil
-                                                  coords:nil];
-    if (word.length) {
-        NSPoint point = [self pointForCoord:range.coordRange.start];
-        point.y += _lineHeight;
-        NSDictionary *attributes = [word attributesAtIndex:0 effectiveRange:nil];
-        if (attributes[NSFontAttributeName]) {
-            NSFont *font = attributes[NSFontAttributeName];
-            point.y += font.descender;
-        }
-        [self showDefinitionForAttributedString:word
-                                        atPoint:point];
-    }
-}
-
-- (BOOL)showWebkitPopoverAtPoint:(NSPoint)pointInWindow url:(NSURL *)url {
-    WKWebView *webView = [[iTermWebViewFactory sharedInstance] webViewWithDelegate:nil];
-    if (webView) {
-        if ([[url.scheme lowercaseString] isEqualToString:@"http"]) {
-            [webView loadHTMLString:@"This site cannot be displayed in QuickLook because of Application Transport Security. Only HTTPS URLs can be previewed." baseURL:nil];
-        } else {
-            NSURLRequest *request =
-                [[[NSURLRequest alloc] initWithURL:url] autorelease];
-            [webView loadRequest:request];
-        }
-        NSPopover *popover = [[[NSPopover alloc] init] autorelease];
-        NSViewController *viewController = [[[iTermWebViewWrapperViewController alloc] initWithWebView:webView
-                                                                                             backupURL:url] autorelease];
-        popover.contentViewController = viewController;
-        popover.contentSize = viewController.view.frame.size;
-        NSRect rect = NSMakeRect(pointInWindow.x - _charWidth / 2,
-                                 pointInWindow.y - _lineHeight / 2,
-                                 _charWidth,
-                                 _lineHeight);
-        rect = [self convertRect:rect fromView:nil];
-        popover.behavior = NSPopoverBehaviorSemitransient;
-        popover.delegate = self;
-        [popover showRelativeToRect:rect
-                             ofView:self
-                      preferredEdge:NSRectEdgeMinY];
-        return YES;
-    } else {
-        return NO;
-    }
-}
-
-
 - (void)quickLookWithEvent:(NSEvent *)event {
-    DLog(@"Quick look with event %@\n%@", event, [NSThread callStackSymbols]);
-    NSPoint clickPoint = [self clickPoint:event allowRightMarginOverflow:YES];
-    URLAction *urlAction = [self urlActionForClickAtX:clickPoint.x y:clickPoint.y];
-    if (!urlAction && [iTermAdvancedSettingsModel performDictionaryLookupOnQuickLook]) {
-        [self showDefinitionForWordAt:clickPoint];
-        return;
-    }
-    NSURL *url = nil;
-    switch (urlAction.actionType) {
-        case kURLActionSecureCopyFile:
-            url = [urlAction.identifier URL];
-            break;
-
-        case kURLActionOpenExistingFile:
-            url = [NSURL fileURLWithPath:urlAction.fullPath];
-            break;
-
-        case kURLActionOpenImage:
-            url = [NSURL fileURLWithPath:[urlAction.identifier nameForNewSavedTempFile]];
-            break;
-
-        case kURLActionOpenURL: {
-            if (!urlAction.string) {
-                break;
-            }
-            url = [NSURL URLWithUserSuppliedString:urlAction.string];
-            if (url && [self showWebkitPopoverAtPoint:event.locationInWindow url:url]) {
-                return;
-            }
-            break;
-        }
-
-        case kURLActionSmartSelectionAction:
-            break;
-    }
-
-    if (url) {
-        NSPoint windowPoint = event.locationInWindow;
-        NSRect windowRect = NSMakeRect(windowPoint.x - _charWidth / 2,
-                                       windowPoint.y - _lineHeight / 2,
-                                       _charWidth,
-                                       _lineHeight);
-
-        NSRect screenRect = [self.window convertRectToScreen:windowRect];
-        self.quickLookController = [[[iTermQuickLookController alloc] init] autorelease];
-        [self.quickLookController addURL:url];
-        [self.quickLookController showWithSourceRect:screenRect controller:self.window.delegate];
-    }
+    [self handleQuickLookWithEvent:event];
 }
 
 - (void)nextTabWithEvent:(NSEvent *)event
@@ -3249,8 +2760,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     }
 }
 
-- (void)downloadWithSCP:(id)sender
-{
+- (void)downloadWithSCP:(id)sender {
     if (![_selection hasSelection]) {
         return;
     }
@@ -3263,35 +2773,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     scpPath = [_dataSource scpPathForFile:parts[0] onLine:_selection.lastRange.coordRange.start.y];
     VT100GridCoordRange range = _selection.lastRange.coordRange;
 
-    [self downloadFileAtSecureCopyPath:scpPath displayName:selectedText locationInView:range];
-}
-
-- (void)downloadFileAtSecureCopyPath:(SCPPath *)scpPath
-                         displayName:(NSString *)name
-                      locationInView:(VT100GridCoordRange)range {
-    [_delegate startDownloadOverSCP:scpPath];
-
-    NSDictionary *attributes =
-        @{ NSForegroundColorAttributeName: [self selectedTextColor],
-           NSBackgroundColorAttributeName: [self selectionBackgroundColor],
-           NSFontAttributeName: _primaryFont.font };
-    NSSize size = [name sizeWithAttributes:attributes];
-    size.height = _lineHeight;
-    NSImage* image = [[[NSImage alloc] initWithSize:size] autorelease];
-    [image lockFocus];
-    [name drawAtPoint:NSMakePoint(0, 0) withAttributes:attributes];
-    [image unlockFocus];
-
-    NSRect windowRect = [self convertRect:NSMakeRect(range.start.x * _charWidth + [iTermAdvancedSettingsModel terminalMargin],
-                                                     range.start.y * _lineHeight,
-                                                     0,
-                                                     0)
-                                   toView:nil];
-    NSPoint point = [[self window] convertRectToScreen:windowRect].origin;
-    point.y -= _lineHeight;
-    [[FileTransferManager sharedInstance] animateImage:image
-                            intoDownloadsMenuFromPoint:point
-                                              onScreen:[[self window] screen]];
+    [_urlActionHelper downloadFileAtSecureCopyPath:scpPath displayName:selectedText locationInView:range];
 }
 
 - (void)showNotes:(id)sender
@@ -3414,67 +2896,6 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     // but this seems to take precedence over the attributed version for
     // pasting sometimes, for example in TextEdit.
     [[PasteboardHistory sharedInstance] save:[copyAttributedString string]];
-}
-
-// Returns a dictionary to pass to NSAttributedString.
-- (NSDictionary *)charAttributes:(screen_char_t)c
-{
-    BOOL isBold = c.bold;
-    BOOL isFaint = c.faint;
-    NSColor *fgColor = [self colorForCode:c.foregroundColor
-                                    green:c.fgGreen
-                                     blue:c.fgBlue
-                                colorMode:c.foregroundColorMode
-                                     bold:isBold
-                                    faint:isFaint
-                             isBackground:NO];
-    NSColor *bgColor = [self colorForCode:c.backgroundColor
-                                    green:c.bgGreen
-                                     blue:c.bgBlue
-                                colorMode:c.backgroundColorMode
-                                     bold:NO
-                                    faint:NO
-                             isBackground:YES];
-    fgColor = [fgColor colorByPremultiplyingAlphaWithColor:bgColor];
-
-    int underlineStyle = (c.urlCode || c.underline) ? (NSUnderlineStyleSingle | NSUnderlineByWord) : 0;
-
-    BOOL isItalic = c.italic;
-    PTYFontInfo *fontInfo = [self getFontForChar:c.code
-                                       isComplex:c.complexChar
-                                      renderBold:&isBold
-                                    renderItalic:&isItalic];
-    NSMutableParagraphStyle *paragraphStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
-    paragraphStyle.lineBreakMode = NSLineBreakByCharWrapping;
-
-    NSFont *font = fontInfo.font;
-    if (!font) {
-        // Ordinarily fontInfo would never be nil, but it is in unit tests. It's useful to distinguish
-        // bold from regular in tests, so we ensure that attribute is correctly set in this test-only
-        // path.
-        const CGFloat size = [NSFont systemFontSize];
-        if (c.bold) {
-            font = [NSFont boldSystemFontOfSize:size];
-        } else {
-            font = [NSFont systemFontOfSize:size];
-        }
-    }
-    NSDictionary *attributes = @{ NSForegroundColorAttributeName: fgColor,
-                                  NSBackgroundColorAttributeName: bgColor,
-                                  NSFontAttributeName: font,
-                                  NSParagraphStyleAttributeName: paragraphStyle,
-                                  NSUnderlineStyleAttributeName: @(underlineStyle) };
-    if ([iTermAdvancedSettingsModel excludeBackgroundColorsFromCopiedStyle]) {
-        attributes = [attributes dictionaryByRemovingObjectForKey:NSBackgroundColorAttributeName];
-    }
-    if (c.urlCode) {
-        NSURL *url = [[iTermURLStore sharedInstance] urlForCode:c.urlCode];
-        if (url != nil) {
-            attributes = [attributes dictionaryBySettingObject:url forKey:NSLinkAttributeName];
-        }
-    }
-
-    return attributes;
 }
 
 - (void)paste:(id)sender
@@ -3700,17 +3121,6 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     return [_selection hasSelection] && [_selection length] <= width;
 }
 
-- (NSDictionary<NSNumber *, NSString *> *)smartSelectionActionSelectorDictionary {
-    // The selector's name must begin with contextMenuAction to
-    // pass validateMenuItem.
-    return @{ @(kOpenFileContextMenuAction): NSStringFromSelector(@selector(contextMenuActionOpenFile:)),
-              @(kOpenUrlContextMenuAction): NSStringFromSelector(@selector(contextMenuActionOpenURL:)),
-              @(kRunCommandContextMenuAction): NSStringFromSelector(@selector(contextMenuActionRunCommand:)),
-              @(kRunCoprocessContextMenuAction): NSStringFromSelector(@selector(contextMenuActionRunCoprocess:)),
-              @(kSendTextContextMenuAction): NSStringFromSelector(@selector(contextMenuActionSendText:)),
-              @(kRunCommandInWindowContextMenuAction): NSStringFromSelector(@selector(contextMenuActionRunCommandInWindow:)) };
-}
-
 - (SEL)selectorForSmartSelectionAction:(NSDictionary *)action {
     NSDictionary<NSNumber *, NSString *> *dictionary = [self smartSelectionActionSelectorDictionary];
     ContextMenuActions contextMenuAction = [ContextMenuActionPrefsController actionForActionDict:action];
@@ -3769,59 +3179,6 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         }
     }
     return didAdd;
-}
-
-- (void)contextMenuActionOpenFile:(id)sender
-{
-    DLog(@"Open file: '%@'", [sender representedObject]);
-    [[NSWorkspace sharedWorkspace] openFile:[[sender representedObject] stringByExpandingTildeInPath]];
-}
-
-- (void)contextMenuActionOpenURL:(id)sender
-{
-    NSURL *url = [NSURL URLWithUserSuppliedString:[sender representedObject]];
-    if (url) {
-        DLog(@"Open URL: %@", [sender representedObject]);
-        [[NSWorkspace sharedWorkspace] openURL:url];
-    } else {
-        DLog(@"%@ is not a URL", [sender representedObject]);
-    }
-}
-
-- (void)contextMenuActionRunCommand:(id)sender {
-    NSString *command = [sender representedObject];
-    DLog(@"Run command: %@", command);
-    [NSThread detachNewThreadSelector:@selector(runCommand:)
-                             toTarget:[self class]
-                           withObject:command];
-}
-
-- (void)contextMenuActionRunCommandInWindow:(id)sender {
-    NSString *command = [sender representedObject];
-    DLog(@"Run command in window: %@", command);
-    [[iTermController sharedInstance] openSingleUseWindowWithCommand:command];
-}
-
-+ (void)runCommand:(NSString *)command
-{
-
-    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    system([command UTF8String]);
-    [pool drain];
-}
-
-- (void)contextMenuActionRunCoprocess:(id)sender
-{
-    NSString *command = [sender representedObject];
-    DLog(@"Run coprocess: %@", command);
-    [_delegate launchCoprocessWithCommand:command];
-}
-
-- (void)contextMenuActionSendText:(id)sender
-{
-    NSString *command = [sender representedObject];
-    DLog(@"Send text: %@", command);
-    [_delegate insertText:command];
 }
 
 // This method is called by control-click or by clicking the hamburger icon in the session title bar.
@@ -4458,21 +3815,6 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     }
 }
 
-- (iTermImageInfo *)imageInfoAtCoord:(VT100GridCoord)coord {
-    if (coord.x < 0 ||
-        coord.y < 0 ||
-        coord.x >= [_dataSource width] ||
-        coord.y >= [_dataSource numberOfLines]) {
-        return nil;
-    }
-    screen_char_t* theLine = [_dataSource getLineAtIndex:coord.y];
-    if (theLine && theLine[coord.x].image) {
-        return GetImageInfo(theLine[coord.x].code);
-    } else {
-        return nil;
-    }
-}
-
 - (void)reRunCommand:(id)sender
 {
     NSString *command = [sender representedObject];
@@ -4786,7 +4128,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
 }
 
 - (void)browse:(id)sender {
-    [self findUrlInString:[self selectedText] andOpenInBackground:NO];
+    [_urlActionHelper findUrlInString:[self selectedText] andOpenInBackground:NO];
 }
 
 - (void)searchInBrowser:(id)sender
@@ -4794,7 +4136,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     NSString* url =
         [NSString stringWithFormat:[iTermAdvancedSettingsModel searchCommand],
                                    [[self selectedText] stringWithPercentEscape]];
-    [self findUrlInString:url andOpenInBackground:NO];
+    [_urlActionHelper findUrlInString:url andOpenInBackground:NO];
 }
 
 - (void)openSingleUseManPageWindow:(id)sender {
@@ -4948,26 +4290,28 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         if (filenames.count) {
             BOOL pasteNewline = NO;
 
+            NSMutableString *stringToPaste = [NSMutableString string];
             if (cdToDirectory) {
                 // cmd-drag: "cd" to dragged directory (well, we assume it's a directory).
                 // If multiple files are dragged, balk.
                 if (filenames.count > 1) {
                     return NO;
                 } else {
-                    [_delegate pasteString:@"cd "];
+                    [stringToPaste appendString:@"cd "];
                     pasteNewline = YES;
                 }
             }
 
             // Paste filenames separated by spaces.
-            [_delegate pasteString:[filenames componentsJoinedByString:@" "]];
-
+            [stringToPaste appendString:[filenames componentsJoinedByString:@" "]];
             if (pasteNewline) {
                 // For cmd-drag, we append a newline.
-                [_delegate pasteString:@"\r"];
+                [stringToPaste appendString:@"\r"];
             } else if (!cdToDirectory) {
-                [_delegate pasteString:@" "];
+                [stringToPaste appendString:@" "];
             }
+            [_delegate pasteString:stringToPaste];
+
             return YES;
         }
     }
@@ -6064,46 +5408,6 @@ scrollToFirstResult:(BOOL)scrollToFirstResult {
 }
 
 
-- (URLAction *)urlActionForClickAtX:(int)x
-                                  y:(int)y
-             respectingHardNewlines:(BOOL)respectHardNewlines {
-    DLog(@"urlActionForClickAt:%@,%@ respectingHardNewlines:%@",
-         @(x), @(y), @(respectHardNewlines));
-    if (y < 0) {
-        return nil;
-    }
-    const VT100GridCoord coord = VT100GridCoordMake(x, y);
-    iTermImageInfo *imageInfo = [self imageInfoAtCoord:coord];
-    if (imageInfo) {
-        return [URLAction urlActionToOpenImage:imageInfo];
-    }
-    iTermTextExtractor *extractor = [iTermTextExtractor textExtractorWithDataSource:_dataSource];
-    if ([extractor characterAt:coord].code == 0) {
-        return nil;
-    }
-    [extractor restrictToLogicalWindowIncludingCoord:coord];
-
-    NSString *workingDirectory = [_dataSource workingDirectoryOnLine:y];
-    DLog(@"According to data source, the working directory on line %d is %@", y, workingDirectory);
-    if (!workingDirectory) {
-        // Well, just try the current directory then.
-        DLog(@"That failed, so try to get the current working directory...");
-        workingDirectory = [_delegate textViewCurrentWorkingDirectory];
-        DLog(@"It is %@", workingDirectory);
-    }
-
-    return [iTermURLActionFactory urlActionAtCoord:VT100GridCoordMake(x, y)
-                               respectHardNewlines:respectHardNewlines
-                                  workingDirectory:workingDirectory ?: @""
-                                        remoteHost:[_dataSource remoteHostOnLine:y]
-                                         selectors:[self smartSelectionActionSelectorDictionary]
-                                             rules:_smartSelectionRules
-                                         extractor:extractor
-                         semanticHistoryController:self.semanticHistoryController
-                                       pathFactory:^SCPPath *(NSString *path, int line) {
-                                           return [_dataSource scpPathForFile:path onLine:line];
-                                       }];
-}
 
 - (void)imageDidLoad:(NSNotification *)notification {
     if ([self missingImageIsVisible:notification.object]) {
@@ -6112,6 +5416,8 @@ scrollToFirstResult:(BOOL)scrollToFirstResult {
 }
 
 - (void)applicationDidResignActive:(NSNotification *)notification {
+    DLog(@"applicationDidResignActive: reset _numTouches to 0");
+    _numTouches = 0;
     [self refuseFirstResponderAtCurrentMouseLocation];
 }
 
@@ -6134,21 +5440,6 @@ scrollToFirstResult:(BOOL)scrollToFirstResult {
         }
     }
     return NO;
-}
-
-- (URLAction *)urlActionForClickAtX:(int)x y:(int)y {
-    // I tried respecting hard newlines if that is a legal URL, but that's such a broad definition
-    // that it doesn't work well. Hard EOLs mid-url are very common. Let's try always ignoring them.
-    return [self urlActionForClickAtX:x
-                                    y:y
-               respectingHardNewlines:![self ignoreHardNewlinesInURLs]];
-}
-
-- (BOOL)ignoreHardNewlinesInURLs {
-    if ([iTermAdvancedSettingsModel ignoreHardNewlinesInURLs]) {
-        return YES;
-    }
-    return [self.delegate textViewInInteractiveApplication];
 }
 
 - (NSDragOperation)dragOperationForSender:(id<NSDraggingInfo>)sender {
@@ -6210,62 +5501,6 @@ scrollToFirstResult:(BOOL)scrollToFirstResult {
         DLog(@"Not allowing drag");
         return NSDragOperationNone;
     }
-}
-
-+ (NSString *)usernameToDownloadFileOnHost:(NSString *)host {
-    NSAlert *alert = [[[NSAlert alloc] init] autorelease];
-    alert.messageText = [NSString stringWithFormat:@"Enter username for host %@ to download file with scp", host];
-    [alert addButtonWithTitle:@"OK"];
-    [alert addButtonWithTitle:@"Cancel"];
-
-    NSTextField *input = [[[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)] autorelease];
-    [input setStringValue:NSUserName()];
-    [alert setAccessoryView:input];
-    [alert layout];
-    [[alert window] makeFirstResponder:input];
-    NSInteger button = [alert runModal];
-    if (button == NSAlertFirstButtonReturn) {
-        [input validateEditing];
-        return [[input stringValue] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-    }
-    return nil;
-}
-
-// If iTerm2 is the handler for the scheme, then the profile is launched directly.
-// Otherwise it's passed to the OS to launch.
-- (void)openURL:(NSURL *)url inBackground:(BOOL)background {
-    DLog(@"openURL:%@ inBackground:%@", url, @(background));
-
-    Profile *profile = [[iTermLaunchServices sharedInstance] profileForScheme:[url scheme]];
-    if (profile) {
-        [_delegate launchProfileInCurrentTerminal:profile withURL:url.absoluteString];
-    } else if (background) {
-        [[NSWorkspace sharedWorkspace] openURLs:@[ url ]
-                                           withAppBundleIdentifier:nil
-                                           options:NSWorkspaceLaunchWithoutActivation
-                                           additionalEventParamDescriptor:nil
-                                           launchIdentifiers:nil];
-    } else {
-        [[NSWorkspace sharedWorkspace] openURL:url];
-    }
-}
-
-- (void)findUrlInString:(NSString *)aURLString andOpenInBackground:(BOOL)background {
-    DLog(@"findUrlInString:%@", aURLString);
-    NSRange range = [aURLString rangeOfURLInString];
-    if (range.location == NSNotFound) {
-        DLog(@"No URL found");
-        return;
-    }
-    NSString *trimmedURLString = [aURLString substringWithRange:range];
-    if (!trimmedURLString) {
-        DLog(@"string is empty");
-        return;
-    }
-    NSString* escapedString = [trimmedURLString stringByEscapingForURL];
-
-    NSURL *url = [NSURL URLWithString:escapedString];
-    [self openURL:url inBackground:background];
 }
 
 - (void)_dragImage:(iTermImageInfo *)imageInfo forEvent:(NSEvent *)theEvent
@@ -6719,12 +5954,12 @@ scrollToFirstResult:(BOOL)scrollToFirstResult {
 
 - (VT100GridWindowedRange)selectionRangeForSmartSelectionAt:(VT100GridCoord)coord {
     VT100GridWindowedRange range;
-    [self smartSelectAtX:coord.x
-                       y:coord.y
-                      to:&range
-        ignoringNewlines:NO
-          actionRequired:NO
-         respectDividers:[[iTermController sharedInstance] selectionRespectsSoftBoundaries]];
+    [_urlActionHelper smartSelectAtX:coord.x
+                                   y:coord.y
+                                  to:&range
+                    ignoringNewlines:NO
+                      actionRequired:NO
+                     respectDividers:[[iTermController sharedInstance] selectionRespectsSoftBoundaries]];
     return range;
 }
 
@@ -6835,8 +6070,10 @@ scrollToFirstResult:(BOOL)scrollToFirstResult {
     if (!NSPointInRect(point, liveRect)) {
         return NO;
     }
-    if ((event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeLeftMouseUp) && _mouseDownWasFirstMouse) {
-        return NO;
+    if (event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeLeftMouseUp) {
+        if (_mouseDownWasFirstMouse && ![iTermAdvancedSettingsModel alwaysAcceptFirstMouse]) {
+            return NO;
+        }
     }
     if ((event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeLeftMouseUp) && self.window.firstResponder != self) {
         return NO;
@@ -6893,7 +6130,7 @@ scrollToFirstResult:(BOOL)scrollToFirstResult {
     coord.y = MAX(0, coord.y);
 
     return [_delegate textViewReportMouseEvent:event.type
-                                     modifiers:event.modifierFlags
+                                     modifiers:event.it_modifierFlags
                                         button:[self mouseReportingButtonNumberForEvent:event]
                                     coordinate:coord
                                         deltaY:[_scrollAccumulator deltaYForEvent:event lineHeight:self.enclosingScrollView.verticalLineScroll]];

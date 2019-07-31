@@ -58,8 +58,9 @@
                                     iTermVariableKeySessionTriggerName,
                                     iTermVariableKeySessionWindowName,
                                     iTermVariableKeySessionJob,
+                                    iTermVariableKeySessionCommandLine,
                                     iTermVariableKeySessionPresentationName,
-                                    iTermVariableKeySessionTmuxWindowTitle,
+                                    iTermVariableKeySessionTmuxPaneTitle,
                                     iTermVariableKeySessionTmuxRole,
                                     iTermVariableKeySessionTmuxClientName,
                                     iTermVariableKeySessionAutoNameFormat,
@@ -84,26 +85,36 @@
     // Tab context
     [self recordUseOfVariableNamed:iTermVariableKeyTabTitleOverride inContext:iTermVariablesSuggestionContextTab];
     [self recordUseOfVariableNamed:iTermVariableKeyTabTitleOverrideFormat inContext:iTermVariablesSuggestionContextTab];
+    [self recordUseOfVariableNamed:iTermVariableKeyTabTmuxWindowName inContext:iTermVariablesSuggestionContextTab];
+    [self recordUseOfVariableNamed:iTermVariableKeyTabTmuxWindowTitle inContext:iTermVariablesSuggestionContextTab];
     [self recordUseOfVariableNamed:iTermVariableKeyTabTmuxWindow inContext:iTermVariablesSuggestionContextTab];
     [self recordUseOfVariableNamed:iTermVariableKeyTabID inContext:iTermVariablesSuggestionContextTab];
-    [self recordUseOfVariableNamed:iTermVariableKeyTabWindow inContext:iTermVariablesSuggestionContextTab];
+    [self recordUseOfNonterminalVariableNamed:iTermVariableKeyTabWindow
+                                    inContext:iTermVariablesSuggestionContextTab
+                             leadingToContext:iTermVariablesSuggestionContextWindow];
 
     [self recordUseOfNonterminalVariableNamed:iTermVariableKeyGlobalScopeName
                                     inContext:iTermVariablesSuggestionContextTab
                              leadingToContext:iTermVariablesSuggestionContextApp];
+
     [self recordUseOfNonterminalVariableNamed:iTermVariableKeyTabCurrentSession
                                     inContext:iTermVariablesSuggestionContextTab
                              leadingToContext:iTermVariablesSuggestionContextSession];
-    // TODO: Add a weak link from tab to window.
 
     // Window context
-    [self recordUseOfVariableNamed:iTermVariableKeyWindowTitleOverrideFormat inContext:iTermVariablesSuggestionContextWindow];
+    [self recordUseOfVariableNamed:iTermVariableKeyWindowTitleOverrideFormat
+                         inContext:iTermVariablesSuggestionContextWindow];
+    [self recordUseOfVariableNamed:iTermVariableKeyWindowID inContext:iTermVariablesSuggestionContextWindow];
     [self recordUseOfNonterminalVariableNamed:iTermVariableKeyWindowCurrentTab
                                     inContext:iTermVariablesSuggestionContextWindow
                              leadingToContext:iTermVariablesSuggestionContextTab];
     [self recordUseOfNonterminalVariableNamed:iTermVariableKeyGlobalScopeName
                                     inContext:iTermVariablesSuggestionContextWindow
                              leadingToContext:iTermVariablesSuggestionContextApp];
+    [self recordUseOfVariableNamed:iTermVariableKeyWindowFrame
+                         inContext:iTermVariablesSuggestionContextWindow];
+    [self recordUseOfVariableNamed:iTermVariableKeyWindowStyle
+                         inContext:iTermVariablesSuggestionContextWindow];
 
     // App context
     [self recordUseOfVariableNamed:iTermVariableKeyApplicationPID inContext:iTermVariablesSuggestionContextApp];
@@ -186,14 +197,41 @@
     return set;
 }
 
++ (NSSet<NSString *> *(^)(NSString *))pathSourceForContext:(iTermVariablesSuggestionContext)context
+                                                 excluding:(NSSet<NSString *> *)exclusions
+                                             allowUserVars:(BOOL)allowUserVars {
+    return ^NSSet<NSString *> *(NSString *prefix) {
+        return [self recordedVariableNamesInContext:context
+                                      augmentedWith:[NSSet set]
+                                          excluding:exclusions
+                                             prefix:prefix
+                                      allowUserVars:allowUserVars];
+    };
+}
+
 + (NSSet<NSString *> *)recordedVariableNamesInContext:(iTermVariablesSuggestionContext)context
                                         augmentedWith:(NSSet<NSString *> *)augmentations
                                                prefix:(NSString *)prefix {
+    return [self recordedVariableNamesInContext:context
+                                  augmentedWith:augmentations
+                                      excluding:[NSSet set]
+                                         prefix:prefix
+                                  allowUserVars:YES];
+}
+
++ (NSSet<NSString *> *)recordedVariableNamesInContext:(iTermVariablesSuggestionContext)context
+                                        augmentedWith:(NSSet<NSString *> *)augmentations
+                                            excluding:(NSSet<NSString *> *)exclusions
+                                               prefix:(NSString *)prefix
+                                        allowUserVars:(BOOL)allowUserVars {
     NSMutableSet<NSString *> *terminalCandidates = [[self recordedTerminalVariableNamesInContext:context] mutableCopy];
     [terminalCandidates unionSet:augmentations];
 
     NSMutableSet<NSString *> *results = [NSMutableSet set];
     for (NSString *candidate in [terminalCandidates copy]) {
+        if (!allowUserVars && [candidate hasPrefix:@"user."]) {
+            continue;
+        }
         NSSet<NSString *> *paths = [self recordedVariableNamesInContext:context fromCandidate:candidate prefix:prefix];
         [results unionSet:paths];
     }
@@ -213,10 +251,15 @@
 
     // This catches session.tab for prefix session.t
     for (NSString *nonterminalName in nonterminalCandidates) {
+        if (!allowUserVars && [nonterminalName isEqualToString:@"user"]) {
+            continue;
+        }
         if ([nonterminalName hasPrefix:prefix]) {
             [results addObject:[nonterminalName stringByAppendingString:@"."]];
         }
     }
+
+    [results minusSet:exclusions];
 
     return results;
 }

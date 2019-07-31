@@ -103,7 +103,8 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 // Returns metrics and optional color for underlines.
 - (void)metalGetUnderlineDescriptorsForASCII:(out iTermMetalUnderlineDescriptor *)ascii
-                                    nonASCII:(out iTermMetalUnderlineDescriptor *)nonAscii;
+                                    nonASCII:(out iTermMetalUnderlineDescriptor *)nonAscii
+                               strikethrough:(out iTermMetalUnderlineDescriptor *)strikethrough;
 
 - (void)enumerateIndicatorsInFrame:(NSRect)frame block:(void (^)(iTermIndicatorDescriptor *))block;
 
@@ -114,7 +115,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
 - (const iTermData *const)lineForRow:(int)y;
 
 - (CGRect)relativeFrame;
-- (CGSize)containerSize;
+- (CGRect)containerRect;
 
 @end
 

@@ -25,9 +25,11 @@ NS_ASSUME_NONNULL_BEGIN
 // set of variables except one (that of the most local scope) must have a name.
 // Variables are searched for one matching the name. You could get and set variables through
 // this object. If you want to get called back when a value changes, use iTermVariableReference.
-@interface iTermVariableScope : NSObject<NSCopying>
+@interface iTermVariableScope : NSObject<NSCopying, iTermVariableVendor>
+
 @property (nonatomic, readonly) NSDictionary<NSString *, NSString *> *dictionaryWithStringValues;
 @property (nonatomic) BOOL neverReturnNil;
+@property (nonatomic, readonly) BOOL usePlaceholders;
 @property (nonatomic, readonly) NSArray<iTermTuple<NSString *, iTermVariables *> *> *frames;
 
 - (iTermVariableRecordingScope *)recordingCopy;
@@ -70,6 +72,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithScope:(iTermVariableScope *)scope NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
+@end
+
+// A scope that causes parsed expressions to record variable references rather than expand them to
+// values.
+@interface iTermVariablePlaceholderScope : iTermVariableScope
 @end
 
 NS_ASSUME_NONNULL_END

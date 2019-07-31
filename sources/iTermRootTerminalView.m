@@ -9,6 +9,8 @@
 #import "iTermRootTerminalView.h"
 
 #import "DebugLogging.h"
+
+#import "NSEvent+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSView+iTerm.h"
 #import "PTYTabView.h"
@@ -59,10 +61,26 @@ typedef struct {
 
 @end
 
-@interface iTermTabBarBacking : NSVisualEffectView
+@interface iTermTabBarBacking : NSVisualEffectView<iTermTabBarControlViewContainer>
+@property (nonatomic) BOOL hidesWhenTabBarHidden;
 @end
 
 @implementation iTermTabBarBacking
+
+- (void)tabBarControlViewWillHide:(BOOL)hidden {
+    if (_hidesWhenTabBarHidden || !hidden) {
+        [self setHidden:hidden];
+    }
+}
+
+@end
+
+@interface iTermFakeWindowTitleLabel : NSTextField
+@property (nonatomic, copy) NSString *windowTitle;
+@property (nonatomic, strong) NSImage *windowIcon;
+@end
+
+@implementation iTermFakeWindowTitleLabel
 @end
 
 @implementation iTermRootTerminalView {
@@ -74,7 +92,7 @@ typedef struct {
     NSString *_windowTitle;
     NSNumber *_windowNumber;
     NSTextField *_windowNumberLabel;
-    NSTextField *_windowTitleLabel;
+    iTermFakeWindowTitleLabel *_windowTitleLabel;
     iTermTabBarBacking *_tabBarBacking NS_AVAILABLE_MAC(10_14);
     iTermGenericStatusBarContainer *_statusBarContainer;
     NSDictionary *_desiredToolbeltProportions;
@@ -89,7 +107,7 @@ typedef struct {
         _delegate = delegate;
 
         self.autoresizesSubviews = YES;
-        _leftTabBarPreferredWidth = [iTermPreferences doubleForKey:kPreferenceKeyLeftTabBarWidth];
+        _leftTabBarPreferredWidth = round([iTermPreferences doubleForKey:kPreferenceKeyLeftTabBarWidth]);
         [self setLeftTabBarWidthFromPreferredWidth];
 
         // Create the tab view.
@@ -109,9 +127,9 @@ typedef struct {
         // Create the tab bar.
         NSRect tabBarFrame = self.bounds;
         tabBarFrame.size.height = _tabBarControl.height;
-
         if (@available(macOS 10.14, *)) {
             _tabBarBacking = [[iTermTabBarBacking alloc] init];
+            _tabBarBacking.hidesWhenTabBarHidden = [delegate rootTerminalViewShouldHideTabBarBackingWhenTabBarIsHidden];
             _tabBarBacking.autoresizesSubviews = YES;
             _tabBarBacking.blendingMode = NSVisualEffectBlendingModeWithinWindow;
             _tabBarBacking.material = NSVisualEffectMaterialTitlebar;
@@ -182,7 +200,7 @@ typedef struct {
         _windowNumberLabel.autoresizingMask = (NSViewMaxXMargin | NSViewMinYMargin);
         [self addSubview:_windowNumberLabel];
 
-        _windowTitleLabel = [NSTextField newLabelStyledTextField];
+        _windowTitleLabel = [iTermFakeWindowTitleLabel newLabelStyledTextField];
         _windowTitleLabel.alphaValue = 1;
         _windowTitleLabel.alignment = NSTextAlignmentCenter;
         _windowTitleLabel.hidden = YES;
@@ -198,6 +216,13 @@ typedef struct {
     _leftTabBarDragHandle.delegate = nil;
 }
 
+- (void)invalidateAutomaticTabBarBackingHiding {
+    _tabBarBacking.hidesWhenTabBarHidden = [self.delegate rootTerminalViewShouldHideTabBarBackingWhenTabBarIsHidden];
+    if (_tabBarControl.isHidden) {
+        _tabBarBacking.hidden = _tabBarBacking.hidesWhenTabBarHidden;
+    }
+}
+
 - (NSView *)hitTest:(NSPoint)point {
     NSView *view = [super hitTest:point];
     if (!_tabBarControlOnLoan && !_windowNumberLabel.hidden && view == _windowNumberLabel) {
@@ -207,6 +232,26 @@ typedef struct {
     } else {
         return view;
     }
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    if (!_windowTitleLabel.hidden && event.clickCount == 2) {
+        const NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+        const CGFloat titleBarHeight = _tabBarControl.height;
+        NSRect rect = NSMakeRect(0, self.bounds.size.height - titleBarHeight, self.bounds.size.width, titleBarHeight);
+        if (NSPointInRect(point, rect)) {
+            NSString *doubleClickAction = [[NSUserDefaults standardUserDefaults] objectForKey:@"AppleActionOnDoubleClick"];
+            if ([doubleClickAction isEqualToString:@"Minimize"]) {
+                [self.window performMiniaturize:nil];
+                return;
+            }
+            if ([doubleClickAction isEqualToString:@"Maximize"]) {
+                [self.window performZoom:nil];
+                return;
+            }
+        }
+    }
+    [super mouseUp:event];
 }
 
 - (BOOL)mouseDownCanMoveWindow {
@@ -246,7 +291,7 @@ typedef struct {
                               self.frame.size.height - height + insets.bottom + 1,
                               iTermStandardButtonsViewWidth,
                               iTermStandardButtonsViewHeight);
-    return frame;
+    return [self retinaRoundRect:frame];
 }
 
 - (NSRect)frameForWindowNumberLabel {
@@ -262,10 +307,11 @@ typedef struct {
     const CGFloat myHeight = self.frame.size.height;
     iTermPreferencesTabStyle preferredStyle = [iTermPreferences intForKey:kPreferenceKeyTabStyle];
     const CGFloat shift = (preferredStyle == TAB_STYLE_MINIMAL) ? 0 : 1;
-    return NSMakeRect(NSMaxX(standardButtonsFrame) + iTermRootTerminalViewWindowNumberLabelMargin,
-                      myHeight - tabBarHeight + (tabBarHeight - capHeight) / 2.0 - baselineOffset - shift,
-                      iTermRootTerminalViewWindowNumberLabelWidth,
-                      windowNumberHeight);
+    NSRect rect = NSMakeRect(NSMaxX(standardButtonsFrame) + iTermRootTerminalViewWindowNumberLabelMargin,
+                             myHeight - tabBarHeight + (tabBarHeight - capHeight) / 2.0 - baselineOffset - shift,
+                             iTermRootTerminalViewWindowNumberLabelWidth,
+                             windowNumberHeight);
+    return [self retinaRoundRect:rect];
 }
 
 - (NSRect)frameForWindowTitleLabel {
@@ -278,10 +324,11 @@ typedef struct {
     const CGFloat myHeight = self.frame.size.height;
     const NSEdgeInsets insets = [self.delegate tabBarInsets];
     const CGFloat sideInset = MAX(MAX(insets.left, insets.right), iTermRootTerminalViewWindowNumberLabelMargin);
-    return NSMakeRect([self retinaRound:sideInset],
-                      [self retinaRound:myHeight - tabBarHeight + (tabBarHeight - capHeight) / 2.0 - baselineOffset],
-                      ceil(MAX(0, self.frame.size.width - sideInset * 2)),
-                      ceil(_windowTitleLabel.frame.size.height));
+    NSRect rect = NSMakeRect([self retinaRound:sideInset],
+                             [self retinaRound:myHeight - tabBarHeight + (tabBarHeight - capHeight) / 2.0 - baselineOffset],
+                             ceil(MAX(0, self.frame.size.width - sideInset * 2)),
+                             ceil(_windowTitleLabel.frame.size.height));
+    return [self retinaRoundRect:rect];
 }
 
 - (NSWindowButton *)windowButtonTypes {
@@ -319,6 +366,9 @@ typedef struct {
     if (!needCustomButtons) {
         [_standardWindowButtonsView removeFromSuperview];
         _standardWindowButtonsView = nil;
+        for (int i = 0; i < self.numberOfWindowButtons; i++) {
+            [[self.window standardWindowButton:self.windowButtonTypes[i]] setHidden:NO];
+        }
         return;
     }
     if (_standardWindowButtonsView) {
@@ -366,8 +416,9 @@ typedef struct {
     if (@available(macOS 10.14, *)) {
         if ([_delegate rootTerminalViewShouldDrawWindowTitleInPlaceOfTabBar]) {
             // Draw background color for fake title bar.
-            [[_delegate rootTerminalViewTabBarBackgroundColor] set];
+            NSColor *const backgroundColor = [_delegate rootTerminalViewTabBarBackgroundColor];
             const CGFloat height = [_delegate rootTerminalViewHeightOfTabBar:self];
+            [backgroundColor set];
             NSRectFill(NSMakeRect(0,
                                   self.frame.size.height - height,
                                   self.frame.size.width,
@@ -383,7 +434,7 @@ typedef struct {
 
         const BOOL haveLeft = self.delegate.haveLeftBorder;
         const BOOL haveTop = self.delegate.haveTopBorder;
-        const BOOL haveRight = self.delegate.haveRightBorder;
+        const BOOL haveRight = self.delegate.haveRightBorderRegardlessOfScrollBar;
         const BOOL haveBottom = self.delegate.haveBottomBorder;
 
         if (haveLeft) {
@@ -464,6 +515,8 @@ typedef struct {
     } else {
         _windowTitleLabel.stringValue = title ?: @"";
     }
+    _windowTitleLabel.windowTitle = title;
+    _windowTitleLabel.windowIcon = icon;
 }
 
 - (void)setWindowTitleIcon:(NSImage *)icon {
@@ -554,21 +607,34 @@ typedef struct {
         iTermPreferencesTabStyle preferredStyle = [iTermPreferences intForKey:kPreferenceKeyTabStyle];
         switch ([self.effectiveAppearance it_tabStyle:preferredStyle]) {
             case TAB_STYLE_AUTOMATIC:
+            case TAB_STYLE_COMPACT:
             case TAB_STYLE_MINIMAL:
                 assert(NO);
                 
             case TAB_STYLE_LIGHT:
             case TAB_STYLE_LIGHT_HIGH_CONTRAST:
-                _divisionView.color = self.window.isKeyWindow
-                        ? [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.49 alpha:1]
-                        : [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.65 alpha:1];
+                if (@available(macOS 10.14, *)) {
+                    _divisionView.color = (self.window.isKeyWindow
+                                           ? [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.70 alpha:1]
+                                           : [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.86 alpha:1]);
+                } else {
+                    _divisionView.color = (self.window.isKeyWindow
+                                           ? [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.49 alpha:1]
+                                           : [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.65 alpha:1]);
+                }
                 break;
 
             case TAB_STYLE_DARK:
             case TAB_STYLE_DARK_HIGH_CONTRAST:
-                _divisionView.color = self.window.isKeyWindow
-                        ? [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.2 alpha:1]
-                        : [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.15 alpha:1];
+                if (@available(macOS 10.14, *)) {
+                    _divisionView.color = (self.window.isKeyWindow
+                                           ? [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.1 alpha:1]
+                                           : [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.07 alpha:1]);
+                } else {
+                    _divisionView.color = (self.window.isKeyWindow
+                                           ? [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.2 alpha:1]
+                                           : [NSColor colorWithCalibratedHue:1 saturation:0 brightness:0.15 alpha:1]);
+                }
                 break;
         }
 
@@ -581,6 +647,9 @@ typedef struct {
 
     _windowNumberLabel.textColor = [self.delegate rootTerminalViewTabBarTextColorForWindowNumber];
     _windowTitleLabel.textColor = [self.delegate rootTerminalViewTabBarTextColorForTitle];
+    if (_windowTitleLabel.windowIcon) {
+        [self setWindowTitleLabelToString:_windowTitleLabel.windowTitle icon:_windowTitleLabel.windowIcon];
+    }
 }
 
 #pragma mark - Toolbelt
@@ -737,7 +806,9 @@ typedef struct {
 }
 
 - (BOOL)shouldLeaveEmptyAreaAtTop {
-    return _tabBarControlOnLoan && [self tabBarShouldBeVisibleWithAdditionalTabs:0];
+    return (_tabBarControlOnLoan &&
+            [self tabBarShouldBeVisibleWithAdditionalTabs:0] &&
+            [self.delegate rootTerminalViewShouldLeaveEmptyAreaAtTop]);
 }
 
 - (void)layoutSubviewsWithHiddenTabBarForWindow:(NSWindow *)thisWindow {
@@ -781,6 +852,11 @@ typedef struct {
     // Even though it's not visible it needs an accurate number so we can compute the proper
     // window size when it appears.
     [self setLeftTabBarWidthFromPreferredWidth];
+
+    if ([_delegate iTermTabBarWindowIsFullScreen]) {
+        // When in full screen the insets must be reset even though the tab bar is not visible.
+        self.tabBarControl.insets = [self.delegate tabBarInsets];
+    }
 }
 
 - (void)layoutSubviewsTopTabBarVisible:(BOOL)topTabBarVisible forWindow:(NSWindow *)thisWindow {
@@ -794,7 +870,7 @@ typedef struct {
             decorationHeights.top += _tabBarControl.height;
         }
     }
-    if (_delegate.haveTopBorder) {
+    if (_delegate.haveTopBorder && ![self.delegate rootTerminalViewShouldDrawWindowTitleInPlaceOfTabBar]) {
         decorationHeights.top += 1;
     }
     if (_delegate.divisionViewShouldBeVisible) {
@@ -993,6 +1069,9 @@ typedef struct {
 - (void)layoutWindowPaneDecorations {
     _windowNumberLabel.textColor = [_delegate rootTerminalViewTabBarTextColorForWindowNumber];
     _windowTitleLabel.textColor = [self.delegate rootTerminalViewTabBarTextColorForTitle];
+    if (_windowTitleLabel.windowIcon) {
+        [self setWindowTitleLabelToString:_windowTitleLabel.windowTitle icon:_windowTitleLabel.windowIcon];
+    }
 
     [self updateWindowNumberFont];
 
@@ -1054,9 +1133,8 @@ typedef struct {
     }
 
     // Update the tab style.
-    [self.tabBarControl setDisableTabClose:[iTermPreferences boolForKey:kPreferenceKeyHideTabCloseButton]];
-    if ([iTermPreferences boolForKey:kPreferenceKeyHideTabCloseButton] &&
-        [iTermPreferences boolForKey:kPreferenceKeyHideTabNumber]) {
+    [self.tabBarControl setDisableTabClose:YES];
+    if ([iTermPreferences boolForKey:kPreferenceKeyHideTabNumber]) {
         [self.tabBarControl setCellMinWidth:[iTermAdvancedSettingsModel minCompactTabWidth]];
     } else {
         [self.tabBarControl setCellMinWidth:[iTermAdvancedSettingsModel minTabWidth]];
@@ -1079,7 +1157,7 @@ typedef struct {
 
 - (CGFloat)leftTabBarWidthForPreferredWidth:(CGFloat)preferredWidth contentWidth:(CGFloat)contentWidth {
     const CGFloat minimumWidth = 50;
-    const CGFloat maximumWidth = contentWidth / 3;
+    const CGFloat maximumWidth = round(contentWidth / 3);
     return MAX(MIN(maximumWidth, preferredWidth), minimumWidth);
 }
 
@@ -1100,7 +1178,7 @@ typedef struct {
     // T <= T/3 + C/3
     // 2/3T <= C/3
     // T <= C/2
-    const CGFloat maximumWidth = self.bounds.size.width / 2;
+    const CGFloat maximumWidth = round(self.bounds.size.width / 2);
     _leftTabBarWidth = MAX(MIN(maximumWidth, _leftTabBarPreferredWidth), minimumWidth);
 }
 
@@ -1170,7 +1248,12 @@ typedef struct {
             _statusBarContainer = [[iTermGenericStatusBarContainer alloc] initWithFrame:statusBarFrame];
             _statusBarContainer.autoresizesSubviews = YES;
             _statusBarContainer.delegate = self;
-            [self addSubview:_statusBarContainer];
+            NSInteger index = [self.subviews indexOfObject:_stoplightHotbox];
+            if (index == NSNotFound) {
+                [self addSubview:_statusBarContainer];
+            } else {
+                [self insertSubview:_statusBarContainer atIndex:index];
+            }
         }
         if (_statusBarViewController.view.superview == _statusBarContainer) {
             [_statusBarViewController.view removeFromSuperview];
@@ -1209,14 +1292,29 @@ typedef struct {
 }
 
 - (BOOL)iTermTabBarCanDragWindow {
-    return[ _delegate iTermTabBarCanDragWindow];
+    return [_delegate iTermTabBarCanDragWindow];
 }
 
 - (BOOL)iTermTabBarShouldHideBacking {
-    if (@available(macOS 10.14, *)) {
-        const iTermPreferencesTabStyle preferredStyle = [iTermPreferences intForKey:kPreferenceKeyTabStyle];
-        return (preferredStyle == TAB_STYLE_MINIMAL);
+    if (@available(macOS 10.14, *)) {} else {
+        return YES;
     }
+    const iTermPreferencesTabStyle preferredStyle = [iTermPreferences intForKey:kPreferenceKeyTabStyle];
+    if (preferredStyle != TAB_STYLE_MINIMAL) {
+        return YES;
+    }
+    switch ([iTermPreferences intForKey:kPreferenceKeyTabPosition]) {
+        case PSMTab_BottomTab:
+        case PSMTab_LeftTab:
+            return YES;
+
+        case PSMTab_TopTab:
+            break;
+    }
+    if ([_delegate lionFullScreen] || [_delegate enteringLionFullscreen]) {
+        return NO;
+    }
+
     return YES;
 }
 
@@ -1225,7 +1323,7 @@ typedef struct {
 // For the left-side tab bar.
 - (CGFloat)dragHandleView:(iTermDragHandleView *)dragHandle didMoveBy:(CGFloat)delta {
     CGFloat originalValue = _leftTabBarPreferredWidth;
-    _leftTabBarPreferredWidth = [self leftTabBarWidthForPreferredWidth:_leftTabBarPreferredWidth + delta];
+    _leftTabBarPreferredWidth = round([self leftTabBarWidthForPreferredWidth:_leftTabBarPreferredWidth + delta]);
     [self layoutSubviews];  // This may modify _leftTabBarWidth if it's too big or too small.
     [[NSUserDefaults standardUserDefaults] setDouble:_leftTabBarPreferredWidth
                                               forKey:kPreferenceKeyLeftTabBarWidth];
@@ -1252,7 +1350,7 @@ typedef struct {
 }
 
 - (BOOL)stoplightHotboxMouseEnter {
-    if ([[NSApp currentEvent] modifierFlags] & NSEventModifierFlagCommand) {
+    if ([[NSApp currentEvent] it_modifierFlags] & NSEventModifierFlagCommand) {
         return NO;
     }
     [_stoplightHotbox setNeedsDisplay:YES];

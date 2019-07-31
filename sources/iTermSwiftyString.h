@@ -24,7 +24,22 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, copy) NSString *swiftyString;
 @property (nonatomic, readonly, copy) id (^source)(NSString *);
-@property (nonatomic, copy) void (^observer)(NSString *);
+
+// To perform evaluation in a different scope than the one that owns the sourcePath and destinationPath set this.
+@property (nullable, nonatomic, copy) iTermVariableScope *(^contextProvider)(void);
+
+// Gives the evaluation scope, using `contextProvider` if set.
+@property (nullable, nonatomic, readonly) iTermVariableScope *scope;
+
+// NOTE: The observer returns a replacement value. If it differs from the passed-in value then
+// it will be called again with the replacement and nil error. It only gets once chance to
+// provide a replacement. This is useful for error handling. If your observer gets called
+// an error, it can return a string that is treated as the result of evaluation. When there is
+// a destination path, it will get updated before the observer is called a second time. This
+// is useful because observers often depend on the fact that the destination path is updated
+// before they are called, since they'll use that to produce a user-visible value. Be careful
+// with side-effects when handling errors because the second call has a nil error.
+@property (nonatomic, copy) NSString *(^observer)(NSString * _Nullable, NSError * _Nullable);
 @property (nullable, nonatomic, readonly) NSString *evaluatedString;
 @property (nonatomic, readonly) NSArray<iTermVariableReference *> *refs;
 @property (nonatomic, copy) NSString *destinationPath;
@@ -34,7 +49,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithString:(NSString *)swiftyString
                          scope:(nullable iTermVariableScope *)scope
-                      observer:(void (^ _Nullable)(NSString *newValue))observer NS_DESIGNATED_INITIALIZER;
+                      observer:(NSString *(^ _Nullable)(NSString * _Nullable newValue, NSError * _Nullable error))observer NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithScope:(nullable iTermVariableScope *)scope
                    sourcePath:(NSString *)sourcePath
@@ -60,7 +75,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithString:(NSString *)swiftyString
                          scope:(nullable iTermVariableScope *)scope
-                      observer:(void (^ _Nullable)(NSString *newValue))observer NS_UNAVAILABLE;
+                      observer:(NSString *(^ _Nullable)(NSString * _Nullable newValue, NSError * _Nullable error))observer NS_UNAVAILABLE;
 
 @end
 

@@ -25,8 +25,9 @@ typedef NS_ENUM(int, iTermPreferencesTabStyle) {
     TAB_STYLE_DARK = 1,
     TAB_STYLE_LIGHT_HIGH_CONTRAST = 2,
     TAB_STYLE_DARK_HIGH_CONTRAST = 3,
-    TAB_STYLE_AUTOMATIC = 4,
-    TAB_STYLE_MINIMAL = 5
+    TAB_STYLE_AUTOMATIC = 4,  // automatic + normal windows. This has the side-effect of changing compact windows to normal.
+    TAB_STYLE_MINIMAL = 5,  // minimal + compact windows. Changes normal windows to compact.
+    TAB_STYLE_COMPACT = 6  // automatic + compact windows. This should be like automatic, except it has a side-effect of changing normal windows to compact.
 };
 
 typedef NS_ENUM(NSUInteger, iTermStatusBarPosition) {
@@ -95,7 +96,8 @@ extern NSString *const kPreferenceKeyStatusBarPosition;
 extern NSString *const kPreferenceKeyHideTabBar;
 extern NSString *const kPreferenceKeyHideTabNumber;
 extern NSString *const kPreferenceKeyPreserveWindowSizeWhenTabBarVisibilityChanges;
-extern NSString *const kPreferenceKeyHideTabCloseButton;
+extern NSString *const kPreferenceKeyHideTabCloseButton;  // DEPRECATED
+extern NSString *const kPreferenceKeyTabsHaveCloseButton;
 extern NSString *const kPreferenceKeyHideTabActivityIndicator;
 extern NSString *const kPreferenceKeyShowNewOutputIndicator;
 extern NSString *const kPreferenceKeyShowPaneTitles;
@@ -133,6 +135,9 @@ extern NSString *const kPreferenceKeyHotkeyEnabled;
 extern NSString *const kPreferenceKeyHotKeyCode;
 extern NSString *const kPreferenceKeyHotkeyCharacter;
 extern NSString *const kPreferenceKeyHotkeyModifiers;
+extern NSString *const kPreferenceKeyEnableHapticFeedbackForEsc;
+extern NSString *const kPreferenceKeyEnableSoundForEsc;
+extern NSString *const kPreferenceKeyVisualIndicatorForEsc;
 
 // Migration to multi-hotkey window will move these settings into a profile.
 extern NSString *const kPreferenceKeyHotKeyTogglesWindow_Deprecated;  // Deprecated
@@ -151,6 +156,7 @@ extern NSString *const kPreferenceKeyDoubleClickPerformsSmartSelection;
 // Not in prefs
 // Stores the last CFBundleVersion run.
 extern NSString *const kPreferenceKeyAppVersion;
+extern NSString *const kPreferenceKeyAllAppVersions;
 
 // Auto-command history (set through menu)
 extern NSString *const kPreferenceAutoCommandHistory;
@@ -186,6 +192,7 @@ extern NSString *const kPreferenceKeyHotkeyMigratedFromSingleToMulti;
 
 // Last app version launched, if any.
 + (NSString *)appVersionBeforeThisLaunch;
++ (NSSet<NSString *> *)allAppVersionsUsedOnThisMachine;
 
 + (void)setObject:(id)object forKey:(NSString *)key;
 + (NSObject *)objectForKey:(NSString *)key;

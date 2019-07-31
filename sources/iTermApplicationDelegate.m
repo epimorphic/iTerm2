@@ -56,6 +56,7 @@
 #import "iTermMenuBarObserver.h"
 #import "iTermMigrationHelper.h"
 #import "iTermModifierRemapper.h"
+#import "iTermObject.h"
 #import "iTermOnboardingWindowController.h"
 #import "iTermPreferences.h"
 #import "iTermPythonRuntimeDownloader.h"
@@ -65,6 +66,7 @@
 #import "iTermOpenQuicklyWindowController.h"
 #import "iTermOrphanServerAdopter.h"
 #import "iTermPasswordManagerWindowController.h"
+#import "iTermPasteHelper.h"
 #import "iTermPreciseTimer.h"
 #import "iTermPreferences.h"
 #import "iTermPromptOnCloseReason.h"
@@ -73,6 +75,7 @@
 #import "iTermRecordingCodec.h"
 #import "iTermScriptConsole.h"
 #import "iTermScriptFunctionCall.h"
+#import "iTermSecureKeyboardEntryController.h"
 #import "iTermServiceProvider.h"
 #import "iTermQuickLookController.h"
 #import "iTermRemotePreferences.h"
@@ -129,7 +132,6 @@ static NSString *const kMarkAlertAction = @"Mark Alert Action";
 NSString *const kMarkAlertActionModalAlert = @"Modal Alert";
 NSString *const kMarkAlertActionPostNotification = @"Post Notification";
 NSString *const kShowFullscreenTabsSettingDidChange = @"kShowFullscreenTabsSettingDidChange";
-NSString *const iTermDidToggleSecureInputNotification = @"iTermDidToggleSecureInputNotification";
 
 static NSString *const kScreenCharRestorableStateKey = @"kScreenCharRestorableStateKey";
 static NSString *const kURLStoreRestorableStateKey = @"kURLStoreRestorableStateKey";
@@ -145,7 +147,7 @@ static BOOL gStartupActivitiesPerformed = NO;
 static NSString *LEGACY_DEFAULT_ARRANGEMENT_NAME = @"Default";
 static BOOL hasBecomeActive = NO;
 
-@interface iTermApplicationDelegate () <iTermPasswordManagerDelegate>
+@interface iTermApplicationDelegate () <iTermPasswordManagerDelegate, iTermObject>
 
 @property(nonatomic, readwrite) BOOL workspaceSessionActive;
 
@@ -178,7 +180,6 @@ static BOOL hasBecomeActive = NO;
     IBOutlet NSMenuItem *maximizePane;
     IBOutlet SUUpdater * suUpdater;
     IBOutlet NSMenuItem *_showTipOfTheDay;  // Here because we must remove it for older OS versions.
-    BOOL secureInputDesired_;
     BOOL quittingBecauseLastWindowClosed_;
 
     IBOutlet NSMenuItem *_splitHorizontallyWithCurrentProfile;
@@ -205,8 +206,6 @@ static BOOL hasBecomeActive = NO;
 
     BOOL _sparkleRestarting;  // Is Sparkle about to restart the app?
 
-    int _secureInputCount;
-
     BOOL _orphansAdopted;  // Have orphan servers been adopted?
 
     NSArray<NSDictionary *> *_buriedSessionsState;
@@ -223,6 +222,7 @@ static BOOL hasBecomeActive = NO;
     } _untitledFileOpenStatus;
     
     BOOL _disableTermination;
+    iTermVariables *_userVariables;
 }
 
 - (instancetype)init {
@@ -307,8 +307,6 @@ static BOOL hasBecomeActive = NO;
 #pragma mark - Interface Builder
 
 - (void)awakeFromNib {
-    secureInputDesired_ = [[[NSUserDefaults standardUserDefaults] objectForKey:@"Secure Input"] boolValue];
-
     NSMenu *viewMenu = [self topLevelViewNamed:@"View"];
     [viewMenu addItem:[NSMenuItem separatorItem]];
 
@@ -384,14 +382,15 @@ static BOOL hasBecomeActive = NO;
     } else if ([menuItem action] == @selector(showTipOfTheDay:)) {
         return ![[iTermTipController sharedInstance] showingTip];
     } else if ([menuItem action] == @selector(toggleSecureInput:)) {
-        if (IsSecureEventInputEnabled()) {
-            if (secureInputDesired_) {
+        iTermSecureKeyboardEntryController *controller = [iTermSecureKeyboardEntryController sharedInstance];
+        if (controller.isEnabled) {
+            if (controller.isDesired) {
                 menuItem.state = NSControlStateValueOn;
             } else {
                 menuItem.state = NSControlStateValueMixed;
             }
         } else {
-            menuItem.state = secureInputDesired_ ? NSOnState : NSOffState;
+            menuItem.state = controller.isDesired ? NSOnState : NSOffState;
         }
         return YES;
     } else if ([menuItem action] == @selector(togglePinHotkeyWindow:)) {
@@ -567,6 +566,7 @@ static BOOL hasBecomeActive = NO;
     if ([[filename pathExtension] isEqualToString:@"its"]) {
         [iTermScriptImporter importScriptFromURL:[NSURL fileURLWithPath:filename]
                                    userInitiated:NO
+                                 offerAutoLaunch:NO
                                       completion:^(NSString * _Nullable errorMessage, BOOL quiet, NSURL *location) {
                                           if (quiet) {
                                               return;
@@ -633,7 +633,9 @@ static BOOL hasBecomeActive = NO;
 
         PseudoTerminal *term = [self terminalToOpenFileIn];
         DLog(@"application:openFile: launching new session in window %@", term);
-        PTYSession *session = [controller launchBookmark:bookmark inTerminal:term];
+        PTYSession *session = [controller launchBookmark:bookmark
+                                              inTerminal:term
+                                      respectTabbingMode:NO];
         term = (id)session.delegate.realParentWindow;
 
         if (term) {
@@ -652,8 +654,9 @@ static BOOL hasBecomeActive = NO;
 {
     DLog(@"applicationShouldTerminateAfterLastWindowClosed called");
     NSArray *terminals = [[iTermController sharedInstance] terminals];
-    if (terminals.count == 1 && [terminals[0] isHotKeyWindow]) {
-        // The last window wasn't really closed, it was just the hotkey window getting ordered out.
+    if (terminals.count > 0) {
+        // The last window wasn't really closed, it was just the hotkey window getting ordered out or a window entering fullscreen.
+        DLog(@"Not quitting automatically. Terminals are %@", terminals);
         return NO;
     }
     if (!userHasInteractedWithAnySession_) {
@@ -979,10 +982,6 @@ static BOOL hasBecomeActive = NO;
 
 - (void)applicationDidResignActive:(NSNotification *)aNotification {
     DLog(@"******** Resign Active\n%@", [NSThread callStackSymbols]);
-    if (secureInputDesired_) {
-        DLog(@"Application resigning active. Disabling secure input.");
-        [self setSecureInput:NO];
-    }
     _savedMouseLocation = [NSEvent mouseLocation];
 }
 
@@ -994,10 +993,6 @@ static BOOL hasBecomeActive = NO;
 
 - (void)applicationDidBecomeActive:(NSNotification *)aNotification {
     hasBecomeActive = YES;
-    if (secureInputDesired_) {
-        DLog(@"Application becoming active. Enable secure input.");
-        [self setSecureInput:YES];
-    }
 
     if ([iTermPreferences boolForKey:kPreferenceKeyFocusFollowsMouse]) {
         NSPoint mouseLocation = [NSEvent mouseLocation];
@@ -1093,6 +1088,7 @@ static BOOL hasBecomeActive = NO;
             minimal = YES;
             // fall through
 
+        case TAB_STYLE_COMPACT:
         case TAB_STYLE_AUTOMATIC: {
             NSString *systemMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"];
             if ([systemMode isEqual:@"Dark"]) {
@@ -1131,6 +1127,9 @@ static BOOL hasBecomeActive = NO;
     }
 
     [[iTermVariableScope globalsScope] setValue:@(getpid()) forVariableNamed:iTermVariableKeyApplicationPID];
+    _userVariables = [[iTermVariables alloc] initWithContext:iTermVariablesSuggestionContextNone
+                                                       owner:self];
+    [[iTermVariableScope globalsScope] setValue:_userVariables forVariableNamed:@"user"];
     [[iTermVariableScope globalsScope] setValue:[self effectiveTheme]
                                forVariableNamed:iTermVariableKeyApplicationEffectiveTheme];
     void (^themeDidChange)(id _Nonnull) = ^(id _Nonnull newValue) {
@@ -1404,8 +1403,11 @@ static BOOL hasBecomeActive = NO;
                                             hotkeyWindowType:iTermHotkeyWindowTypeNone
                                                      makeKey:NO
                                                  canActivate:NO
+                                          respectTabbingMode:YES
                                                      command:nil
-                                                       block:nil];
+                                                       block:nil
+                                                 synchronous:NO
+                                                  completion:nil];
         }
     }
 }
@@ -1814,7 +1816,7 @@ static BOOL hasBecomeActive = NO;
 {
     [self changePasteSpeedBy:1.5
                     bytesKey:@"QuickPasteBytesPerCall"
-                defaultBytes:1024
+                defaultBytes:iTermQuickPasteBytesPerCallDefaultValue
                     delayKey:@"QuickPasteDelayBetweenCalls"
                 defaultDelay:.01];
 }
@@ -1823,7 +1825,7 @@ static BOOL hasBecomeActive = NO;
 {
     [self changePasteSpeedBy:0.66
                     bytesKey:@"QuickPasteBytesPerCall"
-                defaultBytes:1024
+                defaultBytes:iTermQuickPasteBytesPerCallDefaultValue
                     delayKey:@"QuickPasteDelayBetweenCalls"
                 defaultDelay:.01];
 }
@@ -1881,8 +1883,8 @@ static BOOL hasBecomeActive = NO;
                         DLog(@"Create a new window");
                         // Create a new term and add the session to it.
                         term = [[[PseudoTerminal alloc] initWithSmartLayout:YES
-                                                                 windowType:WINDOW_TYPE_NORMAL
-                                                            savedWindowType:WINDOW_TYPE_NORMAL
+                                                                 windowType:iTermWindowDefaultType()
+                                                            savedWindowType:iTermWindowDefaultType()
                                                                      screen:-1
                                                                     profile:nil] autorelease];
                         if (term) {
@@ -1904,8 +1906,8 @@ static BOOL hasBecomeActive = NO;
                         // Create a new window
                         DLog(@"Create a new window");
                         term = [[[PseudoTerminal alloc] initWithSmartLayout:YES
-                                                                 windowType:WINDOW_TYPE_NORMAL
-                                                            savedWindowType:WINDOW_TYPE_NORMAL
+                                                                 windowType:iTermWindowDefaultType()
+                                                            savedWindowType:iTermWindowDefaultType()
                                                                      screen:-1
                                                                     profile:nil] autorelease];
                         [[iTermController sharedInstance] addTerminalWindow:term];
@@ -1958,16 +1960,7 @@ static BOOL hasBecomeActive = NO;
 }
 
 - (IBAction)toggleSecureInput:(id)sender {
-    // Set secureInputDesired_ to the opposite of the current state.
-    secureInputDesired_ = !secureInputDesired_;
-    DLog(@"toggleSecureInput called. Setting desired to %d", (int)secureInputDesired_);
-
-    // Try to set the system's state of secure input to the desired state.
-    [self setSecureInput:secureInputDesired_];
-
-    // Save the preference, independent of whether it succeeded or not.
-    [[NSUserDefaults standardUserDefaults] setObject:[NSNumber numberWithBool:secureInputDesired_]
-                                              forKey:@"Secure Input"];
+    [[iTermSecureKeyboardEntryController sharedInstance] toggle];
 }
 
 - (IBAction)debugLogging:(id)sender {
@@ -2009,8 +2002,9 @@ static BOOL hasBecomeActive = NO;
 - (IBAction)installPythonRuntime:(id)sender {  // Explicit request from menu item
     [[iTermPythonRuntimeDownloader sharedInstance] downloadOptionalComponentsIfNeededWithConfirmation:NO
                                                                                         pythonVersion:nil
+                                                                            minimumEnvironmentVersion:0
                                                                                    requiredToContinue:NO
-                                                                                       withCompletion:^(BOOL ok) {}];
+                                                                                       withCompletion:^(iTermPythonRuntimeDownloaderStatus ok) {}];
 }
 
 - (IBAction)buildScriptMenu:(id)sender {
@@ -2021,11 +2015,20 @@ static BOOL hasBecomeActive = NO;
 - (IBAction)openREPL:(id)sender {
     [[iTermPythonRuntimeDownloader sharedInstance] downloadOptionalComponentsIfNeededWithConfirmation:YES
                                                                                         pythonVersion:nil
+                                                                            minimumEnvironmentVersion:0
                                                                                    requiredToContinue:YES
                                                                                        withCompletion:
-     ^(BOOL ok) {
-         if (!ok) {
-             return;
+     ^(iTermPythonRuntimeDownloaderStatus status) {
+         switch (status) {
+             case iTermPythonRuntimeDownloaderStatusRequestedVersionNotFound:
+             case iTermPythonRuntimeDownloaderStatusCanceledByUser:
+             case iTermPythonRuntimeDownloaderStatusUnknown:
+             case iTermPythonRuntimeDownloaderStatusWorking:
+             case iTermPythonRuntimeDownloaderStatusError:
+                 return;
+             case iTermPythonRuntimeDownloaderStatusNotNeeded:
+             case iTermPythonRuntimeDownloaderStatusDownloaded:
+                 break;
          }
          if (![iTermAPIHelper sharedInstanceFromExplicitUserAction]) {
              return;
@@ -2287,38 +2290,6 @@ static BOOL hasBecomeActive = NO;
     [ToastWindowController showToastWithMessage:[NSString stringWithFormat:@"Pasting at up to %@/sec", [NSString it_formatBytes:rate]]];
 }
 
-- (void)setSecureInput:(BOOL)secure {
-    if (secure && _secureInputCount > 0) {
-        XLog(@"Want to turn on secure input but it's already on");
-        return;
-    }
-
-    if (!secure && _secureInputCount == 0) {
-        XLog(@"Want to turn off secure input but it's already off");
-        return;
-    }
-    DLog(@"Before: IsSecureEventInputEnabled returns %d", (int)IsSecureEventInputEnabled());
-    if (secure) {
-        OSErr err = EnableSecureEventInput();
-        DLog(@"EnableSecureEventInput err=%d", (int)err);
-        if (err) {
-            NSLog(@"EnableSecureEventInput failed with error %d", (int)err);
-        } else {
-            ++_secureInputCount;
-        }
-    } else {
-        OSErr err = DisableSecureEventInput();
-        DLog(@"DisableSecureEventInput err=%d", (int)err);
-        if (err) {
-            XLog(@"DisableSecureEventInput failed with error %d", (int)err);
-        } else {
-            --_secureInputCount;
-        }
-    }
-    [[NSNotificationCenter defaultCenter] postNotificationName:iTermDidToggleSecureInputNotification object:nil];
-    DLog(@"After: IsSecureEventInputEnabled returns %d", (int)IsSecureEventInputEnabled());
-}
-
 - (void)hideStuckToolTips {
     if ([iTermAdvancedSettingsModel hideStuckTooltips]) {
         for (NSWindow *window in [NSApp windows]) {
@@ -2391,6 +2362,16 @@ static BOOL hasBecomeActive = NO;
 
 - (void)windowDidChangeKeyStatus:(NSNotification *)notification {
     DLog(@"%@:\n%@", notification.name, [NSThread callStackSymbols]);
+}
+
+#pragma mark - iTermObject
+
+- (iTermBuiltInFunctions *)objectMethodRegistry {
+    return nil;
+}
+
+- (iTermVariableScope *)objectScope {
+    return [iTermVariableScope globalsScope];
 }
 
 @end

@@ -70,7 +70,8 @@ NSString *const kPreferenceKeyStatusBarPosition = @"StatusBarPosition";
 NSString *const kPreferenceKeyHideTabBar = @"HideTab";
 NSString *const kPreferenceKeyHideTabNumber = @"HideTabNumber";
 NSString *const kPreferenceKeyPreserveWindowSizeWhenTabBarVisibilityChanges = @"PreserveWindowSizeWhenTabBarVisibilityChanges";
-NSString *const kPreferenceKeyHideTabCloseButton = @"HideTabCloseButton";
+NSString *const kPreferenceKeyHideTabCloseButton = @"HideTabCloseButton";  // Deprecated
+NSString *const kPreferenceKeyTabsHaveCloseButton = @"TabsHaveCloseButton";
 NSString *const kPreferenceKeyHideTabActivityIndicator = @"HideActivityIndicator";
 NSString *const kPreferenceKeyShowNewOutputIndicator = @"ShowNewOutputIndicator";
 NSString *const kPreferenceKeyShowPaneTitles = @"ShowPaneTitles";
@@ -107,6 +108,9 @@ NSString *const kPreferenceKeyHotkeyEnabled = @"Hotkey";
 NSString *const kPreferenceKeyHotKeyCode = @"HotkeyCode";
 NSString *const kPreferenceKeyHotkeyCharacter = @"HotkeyChar";  // Nonzero if hotkey char is set.
 NSString *const kPreferenceKeyHotkeyModifiers = @"HotkeyModifiers";
+NSString *const kPreferenceKeyEnableHapticFeedbackForEsc = @"HapticFeedbackForEsc";
+NSString *const kPreferenceKeyEnableSoundForEsc = @"SoundForEsc";
+NSString *const kPreferenceKeyVisualIndicatorForEsc = @"VisualIndicatorForEsc";
 
 NSString *const kPreferenceKeyHotKeyTogglesWindow_Deprecated = @"HotKeyTogglesWindow";  // deprecated
 NSString *const kPreferenceKeyHotkeyProfileGuid_Deprecated = @"HotKeyBookmark";  // deprecated
@@ -121,6 +125,7 @@ NSString *const kPreferenceKeyTripleClickSelectsFullWrappedLines = @"TripleClick
 NSString *const kPreferenceKeyDoubleClickPerformsSmartSelection = @"DoubleClickPerformsSmartSelection";
 
 NSString *const kPreferenceKeyAppVersion = @"iTerm Version";  // Excluded from syncing
+NSString *const kPreferenceKeyAllAppVersions = @"NoSyncAllAppVersions";  // Array of known iTerm2 versions this user has used on this machine.
 NSString *const kPreferenceAutoCommandHistory = @"AutoCommandHistory";
 
 NSString *const kPreferenceKeyPasteSpecialChunkSize = @"PasteSpecialChunkSize";
@@ -158,6 +163,37 @@ static NSString *sPreviousVersion;
     return sPreviousVersion;
 }
 
++ (NSSet<NSString *> *)allAppVersionsUsedOnThisMachine {
+    static NSSet<NSString *> *versions;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        versions = [NSSet setWithArray:[[NSUserDefaults standardUserDefaults] objectForKey:kPreferenceKeyAllAppVersions] ?: @[]];
+    });
+    return versions;
+
+}
+
++ (void)initializeAppVersionBeforeThisLaunch:(NSString *)thisVersion {
+    // Force it to be lazy-loaded.
+    [self appVersionBeforeThisLaunch];
+    // Then overwrite it with the current version
+    [[NSUserDefaults standardUserDefaults] setObject:thisVersion forKey:kPreferenceKeyAppVersion];
+}
+
++ (void)initializeAllAppVersionsUsedOnThisMachine:(NSString *)thisVersion {
+    // Update all app versions ever seena.
+    NSMutableSet *allVersions = [NSMutableSet setWithArray:[[NSUserDefaults standardUserDefaults] objectForKey:kPreferenceKeyAllAppVersions] ?: @[]];
+    
+    NSString *const before = [self appVersionBeforeThisLaunch];
+    if (before) {
+        [allVersions addObject:before];
+    }
+
+    [allVersions addObject:thisVersion];
+    [allVersions removeObject:@"unknown"];
+    [[NSUserDefaults standardUserDefaults] setObject:allVersions.allObjects forKey:kPreferenceKeyAllAppVersions];
+}
+
 + (void)initializeUserDefaults {
     NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
 
@@ -176,12 +212,12 @@ static NSString *sPreviousVersion;
     // immediately), and generally sucks with a terminal.
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"NSScrollAnimationEnabled"];
 
-    // Store the current app version in prefs
     NSDictionary *infoDictionary = [[NSBundle bundleForClass:[self class]] infoDictionary];
-    // Force it to be lazy-loaded.
-    [self appVersionBeforeThisLaunch];
-    [userDefaults setObject:infoDictionary[@"CFBundleVersion"] forKey:kPreferenceKeyAppVersion];
+    NSString *const thisVersion = infoDictionary[@"CFBundleVersion"];
+    [self initializeAppVersionBeforeThisLaunch:thisVersion];
+    [self initializeAllAppVersionsUsedOnThisMachine:thisVersion];
 
+    
     // Disable under-titlebar mirror view.
 
     // OS 10.10 has a spiffy feature where it finds a scrollview that is
@@ -261,7 +297,8 @@ static NSString *sPreviousVersion;
                   kPreferenceKeyHideTabBar: @YES,
                   kPreferenceKeyHideTabNumber: @NO,
                   kPreferenceKeyPreserveWindowSizeWhenTabBarVisibilityChanges: @NO,
-                  kPreferenceKeyHideTabCloseButton: @NO,
+                  kPreferenceKeyHideTabCloseButton: @NO,  // Deprecated
+                  kPreferenceKeyTabsHaveCloseButton: @YES,
                   kPreferenceKeyHideTabActivityIndicator: @NO,
                   kPreferenceKeyShowNewOutputIndicator: @YES,
                   kPreferenceKeyStretchTabsToFillBar: @YES,
@@ -301,6 +338,9 @@ static NSString *sPreviousVersion;
                   kPreferenceKeyHotKeyTogglesWindow_Deprecated: @NO,
                   kPreferenceKeyHotkeyProfileGuid_Deprecated: [NSNull null],
                   kPreferenceKeyHotkeyAutoHides_Deprecated: @YES,
+                  kPreferenceKeyEnableHapticFeedbackForEsc: @NO,
+                  kPreferenceKeyEnableSoundForEsc: @NO,
+                  kPreferenceKeyVisualIndicatorForEsc: @NO,
 
                   kPreferenceKeyCmdClickOpensURLs: @YES,
                   kPreferenceKeyControlLeftClickBypassesContextMenu: @NO,
@@ -391,7 +431,10 @@ static NSString *sPreviousVersion;
         dict = @{ kPreferenceKeyOpenArrangementAtStartup: BLOCK(computedOpenArrangementAtStartup),
                   kPreferenceKeyCustomFolder: BLOCK(computedCustomFolder),
                   kPreferenceKeyCharactersConsideredPartOfAWordForSelection: BLOCK(computedWordChars),
-                  kPreferenceKeyTabStyle: BLOCK(computedTabStyle) };
+                  kPreferenceKeyTabStyle: BLOCK(computedTabStyle),
+                  kPreferenceKeyUseMetal: BLOCK(computedUseMetal),
+                  kPreferenceKeyTabsHaveCloseButton: BLOCK(computedTabsHaveCloseButton),
+                  };
     }
     return dict;
 }
@@ -583,6 +626,36 @@ static NSString *sPreviousVersion;
     } else {
         return @(TAB_STYLE_LIGHT);
     }
+}
+
++ (NSNumber *)computedTabsHaveCloseButton {
+    NSNumber *value;
+    value = [[NSUserDefaults standardUserDefaults] objectForKey:kPreferenceKeyTabsHaveCloseButton];
+    if (value) {
+        return value;
+    }
+
+    value = [[NSUserDefaults standardUserDefaults] objectForKey:@"eliminateCloseButtons"];
+    if (value) {
+        return @(!value.boolValue);
+    }
+
+    return [self defaultObjectForKey:kPreferenceKeyTabsHaveCloseButton];
+}
+
++ (NSNumber *)computedUseMetal {
+    NSNumber *value;
+    value = [[NSUserDefaults standardUserDefaults] objectForKey:kPreferenceKeyUseMetal];
+    if (value) {
+        return value;
+    }
+
+    if (@available(macOS 10.13, *)) {
+        return @YES;
+    }
+
+    // Off by default on 10.12 because it's slow.
+    return @NO;
 }
 
 + (iTermUserDefaultsObserver *)sharedObserver {

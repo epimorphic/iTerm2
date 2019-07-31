@@ -21,6 +21,7 @@ typedef NS_OPTIONS(int, iTermMetalGlyphKeyTypeface) {
 
 typedef struct {
     unichar code;
+    unichar combiningSuccessor;  // 0 if none, which is the normal case.
     BOOL isComplex;
     BOOL boxDrawing;
     BOOL thinStrokes;
@@ -32,7 +33,7 @@ typedef struct {
 typedef struct {
     vector_float4 foregroundColor;
     vector_float4 backgroundColor;
-    iTermMetalGlyphAttributesUnderline underlineStyle : 2;
+    iTermMetalGlyphAttributesUnderline underlineStyle : 3;
     BOOL annotation;  // affects underline color
 } iTermMetalGlyphAttributes;
 
@@ -46,6 +47,14 @@ NS_INLINE NSString *iTermMetalGlyphKeyDescription(const iTermMetalGlyphKey *key)
     } else {
         formattedCode = @(key->code);
     }
+
+    id formattedCombiningSuccessor;
+    if (key->combiningSuccessor) {
+        formattedCombiningSuccessor = [NSString stringWithFormat:@"0x%x (%C)", key->combiningSuccessor, key->combiningSuccessor];
+    } else {
+        formattedCombiningSuccessor = @"none";
+    }
+
     NSString *typefaceString = @"";
     if (key->typeface & iTermMetalGlyphKeyTypefaceBold) {
         typefaceString = [typefaceString stringByAppendingString:@"B"];
@@ -54,8 +63,9 @@ NS_INLINE NSString *iTermMetalGlyphKeyDescription(const iTermMetalGlyphKey *key)
         typefaceString = [typefaceString stringByAppendingString:@"I"];
     }
 
-    return [NSString stringWithFormat:@"code=%@ complex=%@ boxDrawing=%@ thinStrokes=%@ typeface=%@",
+    return [NSString stringWithFormat:@"code=%@ combiningSuccessor=%@ complex=%@ boxDrawing=%@ thinStrokes=%@ typeface=%@",
             formattedCode,
+            formattedCombiningSuccessor,
             key->isComplex ? @"YES" : @"NO",
             key->boxDrawing ? @"YES" : @"NO",
             key->thinStrokes ? @"YES" : @"NO",
@@ -79,7 +89,19 @@ NS_INLINE NSString *iTermMetalGlyphAttributesDescription(iTermMetalGlyphAttribut
             underline = @"SINGLE";
             break;
         case iTermMetalGlyphAttributesUnderlineDashedSingle:
-            underline=@"DASHED SINGLE";
+            underline = @"DASHED SINGLE";
+            break;
+        case iTermMetalGlyphAttributesUnderlineStrikethrough:
+            underline = @"STRIKETHROUGH";
+            break;
+        case iTermMetalGlyphAttributesUnderlineStrikethroughAndDouble:
+            underline = @"STRIKETHROUGH+DOUBLE";
+            break;
+        case iTermMetalGlyphAttributesUnderlineStrikethroughAndSingle:
+            underline = @"STRIKETHROUGH+SINGLE";
+            break;
+        case iTermMetalGlyphAttributesUnderlineStrikethroughAndDashedSingle:
+            underline = @"STRIKETHROUGH+DASHED SINGLE";
             break;
     }
     return [NSString stringWithFormat:@"fg=%@ bg=%@ underline=%@ annotation=%@",

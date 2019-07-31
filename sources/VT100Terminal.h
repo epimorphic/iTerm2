@@ -13,6 +13,28 @@
 #define NUM_CHARSETS 4  // G0...G3. Values returned from -charset go from 0 to this.
 #define NUM_MODIFIABLE_RESOURCES 5
 
+typedef struct {
+    BOOL bold;
+    BOOL blink;
+    BOOL underline;
+    BOOL strikethrough;
+    BOOL reversed;
+    BOOL faint;
+    BOOL italic;
+    // TODO: Add invisible and protected
+
+    int fgColorCode;
+    int fgGreen;
+    int fgBlue;
+    ColorMode fgColorMode;
+
+    int bgColorCode;
+    int bgGreen;
+    int bgBlue;
+    ColorMode bgColorMode;
+} VT100GraphicRendition;
+
+
 @interface VT100Terminal : NSObject
 
 @property(nonatomic, readonly) VT100Parser *parser;
@@ -54,6 +76,7 @@
 @property(nonatomic, assign) BOOL keypadMode;  // YES=application, NO=numeric
 - (void)forceSetKeypadMode:(BOOL)mode;  // ignores allowKeypadMode
 @property(nonatomic, assign) BOOL allowKeypadMode;
+@property(nonatomic, assign) BOOL allowPasteBracketing;
 
 // http://www.xfree86.org/current/ctlseqs.html#Bracketed%20Paste%20Mode
 @property(nonatomic, assign) BOOL bracketedPasteMode;
@@ -72,6 +95,7 @@
 
 // Records whether the remote side thinks we're in alternate screen mode.
 @property(nonatomic, readonly) BOOL softAlternateScreenMode;
+@property(nonatomic) VT100GraphicRendition graphicRendition;
 
 - (void)setStateFromDictionary:(NSDictionary *)dict;
 

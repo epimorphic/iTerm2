@@ -128,7 +128,7 @@ class Tab:
         """
         Sets a user-defined variable in the tab.
 
-        See Badges documentation for more information on user-defined variables.
+        See the Scripting Fundamentals documentation for more information on user-defined variables.
 
         :param name: The variable's name.
         :param value: The new value to assign.
@@ -178,6 +178,20 @@ class Tab:
         status = result.close_response.statuses[0]
         if status != iterm2.api_pb2.CloseResponse.Status.Value("OK"):
             raise iterm2.rpc.RPCException(iterm2.api_pb2.CloseResponse.Status.Name(status))
+
+    async def async_set_title(self, title: str):
+        """Changes the tab's title.
+
+        This is equivalent to editing the tab's title with the menu item Edit Tab Title. The title is an interpolated string.
+
+        :param title: The new title. Set it to an empty string to use the default value (the current session's title).
+
+        :throws: :class:`~iterm2.rpc.RPCException` if something goes wrong.
+        """
+        invocation = iterm2.util.invocation_string(
+                "iterm2.set_title",
+                { "title": title })
+        await iterm2.rpc.async_invoke_method(self.connection, self.tab_id, invocation, -1)
 
     async def async_invoke_function(self, invocation: str, timeout: float=-1):
         """

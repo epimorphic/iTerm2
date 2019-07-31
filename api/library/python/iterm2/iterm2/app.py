@@ -197,7 +197,7 @@ class App:
                     return window
         return None
 
-    async def async_refresh(self, _connection: iterm2.connection.Connection=None, _sub_notif: typing.Any=None) -> None:
+    async def async_refresh(self, connection: iterm2.connection.Connection=None, _sub_notif: typing.Any=None) -> None:
         """Reloads the hierarchy.
 
         Note that this calls :meth:`async_refresh_focus`.
@@ -206,10 +206,15 @@ class App:
         receiving notifications. One exception is if you need the REPL to pick up changes to the
         state, since it doesn't receive notifications at the Python prompt.
         """
-        response = await iterm2.rpc.async_list_sessions(self.connection)
+        layout = await iterm2.rpc.async_list_sessions(self.connection)
+        return await self._async_handle_layout_change(connection, layout)
+
+    async def _async_handle_layout_change(self, _connection: iterm2.connection.Connection=None, layout: typing.Any=None) -> None:
+        """Layout change notification handler. Also called by async_refresh."""
+        list_sessions_response = layout.list_sessions_response
         new_windows = App._windows_from_list_sessions_response(
             self.connection,
-            response.list_sessions_response)
+            list_sessions_response)
 
         def all_sessions(windows):
             for w in windows:
@@ -265,7 +270,7 @@ class App:
                 s = iterm2.session.Session(self.connection, None, session_summary)
             return s
 
-        self.__buried_sessions = list(map(get_buried_session, response.list_sessions_response.buried_sessions))
+        self.__buried_sessions = list(map(get_buried_session, list_sessions_response.buried_sessions))
         self.__terminal_windows = windows
         await self.async_refresh_focus()
 
@@ -356,6 +361,11 @@ class App:
 
     def get_tab_and_window_for_session(self,
             session: iterm2.session.Session) -> typing.Union[typing.Tuple[None, None], typing.Tuple[iterm2.window.Window, iterm2.tab.Tab]]:
+        """Deprecated because the name is wrong for the order of return arguments"""
+        return self.get_window_and_tab_for_session(session)
+
+    def get_window_and_tab_for_session(self,
+            session: iterm2.session.Session) -> typing.Union[typing.Tuple[None, None], typing.Tuple[iterm2.window.Window, iterm2.tab.Tab]]:
         """Finds the tab and window that own a session.
 
         :param session: The session whose tab and window you wish to find.
@@ -382,7 +392,7 @@ class App:
         self.tokens.append(
             await iterm2.notifications.async_subscribe_to_layout_change_notification(
                 connection,
-                self.async_refresh))
+                self._async_handle_layout_change))
         self.tokens.append(
             await iterm2.notifications.async_subscribe_to_focus_change_notification(
                 connection,
@@ -396,8 +406,7 @@ class App:
         """
         Sets a user-defined variable in the application.
 
-        See Badges documentation for more information on user-defined variables.
-
+        See the Scripting Fundamentals documentation for more information on user-defined variables.
         :param name: The variable's name.
         :param value: The new value to assign.
 

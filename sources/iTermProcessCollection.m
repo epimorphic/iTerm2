@@ -14,6 +14,7 @@
 @interface iTermProcessInfo()
 @property(nonatomic, weak, readwrite) iTermProcessInfo *parent;
 @property(atomic, strong) NSString *nameValue;
+@property(atomic, strong) NSString *commandLineValue;
 @property(atomic) NSNumber *isForegroundJobValue;
 @end
 
@@ -25,6 +26,7 @@
     NSNumber *_isForegroundJob;
     dispatch_once_t _once;
     NSNumber *_testValueForForegroundJob;
+    BOOL _computingTreeString;
 }
 
 - (instancetype)initWithPid:(pid_t)processID
@@ -37,6 +39,11 @@
     return self;
 }
 
+- (NSString *)description {
+    return [NSString stringWithFormat:@"<%@: %p pid=%@ name=%@ children.count=%@ haveDeepest=%@ isFg=%@>",
+            self.class, self, @(self.processID), _name, @(_children.count), @(_haveDeepestForegroundJob), _isForegroundJob];
+}
+
 - (BOOL)isEqual:(id)object {
     iTermProcessInfo *other = [iTermProcessInfo castFrom:object];
     if (!other) {
@@ -45,9 +52,14 @@
     return self.processID == other.processID && [self.name isEqualToString:other.name] && self.parentProcessID == self.parentProcessID;
 }
 - (NSString *)treeStringWithIndent:(NSString *)indent {
+    if (_computingTreeString) {
+        return [NSString stringWithFormat:@"<CYCLE DETECTED AT %@>", self];
+    }
+    _computingTreeString = YES;
     NSString *children = [[_children mapWithBlock:^id(id anObject) {
         return [anObject treeStringWithIndent:[indent stringByAppendingString:@"  "]];
     }] componentsJoinedByString:@"\n"];
+    _computingTreeString = NO;
     if (_children.count > 0) {
         children = [@"\n" stringByAppendingString:children];
     }
@@ -130,10 +142,24 @@
     }
 }
 
+- (NSArray<iTermProcessInfo *> *)descendantsSkippingLevels:(NSInteger)levels {
+    if (levels < 0) {
+        return [self flattenedTree];
+    }
+    return [_children flatMapWithBlock:^id(iTermProcessInfo *child) {
+        return [child descendantsSkippingLevels:levels - 1];
+    }];
+}
+
 - (void)doSlowLookup {
     dispatch_once(&_once, ^{
-        BOOL fg;
+        BOOL fg = NO;
+        // This is the "real" name, not the hacked one with a leading hyphen.
         self.nameValue = [iTermLSOF nameOfProcessWithPid:self->_processID isForeground:&fg];
+        if (fg) {
+            // Full command line with hacked command name.
+            self.commandLineValue = [iTermLSOF commandForProcess:self->_processID execName:nil];
+        }
         self.isForegroundJobValue = @(fg);
     });
 }
@@ -141,6 +167,11 @@
 - (NSString *)name {
     [self doSlowLookup];
     return self.nameValue;
+}
+
+- (NSString *)commandLine {
+    [self doSlowLookup];
+    return self.commandLineValue;
 }
 
 - (BOOL)isForegroundJob {
@@ -162,8 +193,9 @@
     });
 }
 
-- (void)privateSetIsForegroundJob {
-    _testValueForForegroundJob = @YES;
+- (void)privateSetIsForegroundJob:(BOOL)value {
+    _testValueForForegroundJob = @(value);
+    dispatch_once(&_once, ^{});
 }
 
 @end

@@ -160,7 +160,7 @@
 #define KEY_OPEN_TOOLBELT                     @"Open Toolbelt"
 #define KEY_HIDE_AFTER_OPENING                @"Hide After Opening"
 #define KEY_SYNC_TITLE_DEPRECATED             @"Sync Title"  // DEPRECATED
-#define KEY_CLOSE_SESSIONS_ON_END             @"Close Sessions On End"
+#define KEY_SESSION_END_ACTION                @"Close Sessions On End"  // iTermSessionEndAction
 #define KEY_TREAT_NON_ASCII_AS_DOUBLE_WIDTH   @"Non Ascii Double Width"  // DEPRECATED
 #define KEY_AMBIGUOUS_DOUBLE_WIDTH            @"Ambiguous Double Width"
 #define KEY_USE_HFS_PLUS_MAPPING              @"Use HFS Plus Mapping"  // DEPRECATED
@@ -173,6 +173,7 @@
 #define KEY_UNICODE_VERSION                   @"Unicode Version"
 #define KEY_DISABLE_SMCUP_RMCUP               @"Disable Smcup Rmcup"
 #define KEY_ALLOW_TITLE_REPORTING             @"Allow Title Reporting"
+#define KEY_ALLOW_PASTE_BRACKETING            @"Allow Paste Bracketing"
 #define KEY_ALLOW_TITLE_SETTING               @"Allow Title Setting"
 #define KEY_DISABLE_PRINTING                  @"Disable Printing"
 #define KEY_SCROLLBACK_WITH_STATUS_BAR        @"Scrollback With Status Bar"
@@ -243,6 +244,13 @@
 // Session-only key
 #define KEY_SESSION_HOTKEY                   @"Session Hotkey"
 
+// This is not a real setting. It's just a way for the session to communicate
+// the tmux pane title to the edit session dialog so it can prepopulate the
+// field correctly.
+#define KEY_TMUX_PANE_TITLE                  @"tmux Pane Title"
+
+@class iTermVariableScope;
+
 // Posted when a session's unicode version changes.
 extern NSString *const iTermUnicodeVersionDidChangeNotification;
 
@@ -255,6 +263,12 @@ typedef NS_ENUM(NSInteger, iTermProfileSpaceSetting) {
     iTermProfileOpenInCurrentSpace = 0
 };
 
+typedef NS_ENUM(NSUInteger, iTermSessionEndAction) {
+    iTermSessionEndActionDefault = 0,
+    iTermSessionEndActionClose = 1,
+    iTermSessionEndActionRestart = 2
+};
+
 typedef NS_ENUM(int, iTermOptionKeyBehavior) {
     OPT_NORMAL = 0,
     OPT_META = 1,
@@ -265,7 +279,7 @@ typedef NS_ENUM(int, iTermOptionKeyBehavior) {
 // the UI as "tag" values for each select list item. They are also
 // stored in saved arrangements.
 typedef enum {
-    WINDOW_TYPE_NORMAL = 0,
+    WINDOW_TYPE_NORMAL = 0,  // May be converted to compact depending on theme
     WINDOW_TYPE_TRADITIONAL_FULL_SCREEN = 1,  // Pre-Lion fullscreen
     // note: 2 is out of order below
 
@@ -287,9 +301,12 @@ typedef enum {
     WINDOW_TYPE_RIGHT_PARTIAL = 11,
 
     WINDOW_TYPE_NO_TITLE_BAR = 12,
-    WINDOW_TYPE_COMPACT = 13,
+    WINDOW_TYPE_COMPACT = 13,  // May be converted to normal depending on theme
     WINDOW_TYPE_ACCESSORY = 14
 } iTermWindowType;
+
+iTermWindowType iTermWindowDefaultType(void);
+iTermWindowType iTermThemedWindowType(iTermWindowType windowType);
 
 typedef NS_ENUM(NSInteger, iTermObjectType) {
   iTermWindowObject,
@@ -344,7 +361,8 @@ typedef NS_OPTIONS(NSUInteger, iTermTitleComponents) {
     iTermTitleComponentsProfileName = 1 << 5,
     iTermTitleComponentsProfileAndSessionName = 1 << 6,
     iTermTitleComponentsUser = 1 << 7,
-    iTermTitleComponentsHost = 1 << 8
+    iTermTitleComponentsHost = 1 << 8,
+    iTermTitleComponentsCommandLine = 1 << 9,
 };
 
 typedef NS_ENUM(NSUInteger, iTermProfileIcon) {
@@ -368,8 +386,6 @@ typedef NS_ENUM(NSUInteger, iTermProfileIcon) {
 + (NSString*)descFromFont:(NSFont*)font __attribute__((deprecated));
 + (NSString*)bookmarkCommand:(Profile*)bookmark
                forObjectType:(iTermObjectType)objectType;
-+ (NSString*)bookmarkWorkingDirectory:(Profile*)bookmark
-                        forObjectType:(iTermObjectType)objectType;
 
 // Indicates if it is safe to remove the profile from the model.
 + (BOOL)canRemoveProfile:(Profile *)profile fromModel:(ProfileModel *)model;

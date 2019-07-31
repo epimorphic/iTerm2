@@ -11,6 +11,7 @@
 #import "iTermEventTap.h"
 #import "iTermShortcutInputView.h"
 #import "iTermSystemVersion.h"
+#import "NSEvent+iTerm.h"
 
 @interface iTermModifierRemapper()<iTermEventTapRemappingDelegate>
 @end
@@ -101,7 +102,7 @@
 
 - (void)stopRemappingModifiers {
     [_keyDown setRemappingDelegate:nil];
-    [[iTermFlagsChangedEventTap sharedInstance] setRemappingDelegate:nil];
+    [[iTermFlagsChangedEventTap sharedInstanceCreatingIfNeeded:NO] setRemappingDelegate:nil];
 }
 
 - (void)requestAccessibilityPermission {
@@ -187,7 +188,7 @@
     }
     NSString* unmodkeystr = [cocoaEvent charactersIgnoringModifiers];
     unichar unmodunicode = [unmodkeystr length] > 0 ? [unmodkeystr characterAtIndex:0] : 0;
-    unsigned int modflag = [cocoaEvent modifierFlags];
+    unsigned int modflag = [cocoaEvent it_modifierFlags];
     NSString *keyBindingText;
 
     const int boundAction = [iTermKeyBindingMgr actionForKeyCode:unmodunicode

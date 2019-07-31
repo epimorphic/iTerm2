@@ -46,6 +46,9 @@ extern PSMTabBarControlOptionKey PSMTabBarControlOptionColoredSelectedTabOutline
 extern PSMTabBarControlOptionKey PSMTabBarControlOptionMinimalStyleBackgroundColorDifference;  // Number in 0-1
 extern PSMTabBarControlOptionKey PSMTabBarControlOptionColoredMinimalOutlineStrength;  // Number in 0-1
 extern PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminence;  // NSNumber in 0-0.5
+extern PSMTabBarControlOptionKey PSMTabBarControlOptionDimmingAmount;  // Double in 0-1
+extern PSMTabBarControlOptionKey PSMTabBarControlOptionMinimalStyleTreatLeftInsetAsPartOfFirstTab;  // Boolean
+extern PSMTabBarControlOptionKey PSMTabBarControlOptionMinimumSpaceForLabel;  // NSNumber CFGloat points
 
 // Tab views controlled by the tab bar may expect this protocol to be conformed to by their delegate.
 @protocol PSMTabViewDelegate<NSTabViewDelegate>
@@ -91,14 +94,15 @@ extern PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextP
 
 //Drag and drop methods
 - (BOOL)tabView:(NSTabView *)aTabView shouldDragTabViewItem:(NSTabViewItem *)tabViewItem fromTabBar:(PSMTabBarControl *)tabBarControl;
-- (BOOL)tabView:(NSTabView *)aTabView shouldDropTabViewItem:(NSTabViewItem *)tabViewItem inTabBar:(PSMTabBarControl *)tabBarControl;
+- (BOOL)tabView:(NSTabView *)aTabView shouldDropTabViewItem:(NSTabViewItem *)tabViewItem inTabBar:(PSMTabBarControl *)tabBarControl moveSourceWindow:(BOOL *)moveSourceWindow;
 - (void)tabView:(NSTabView*)aTabView willDropTabViewItem:(NSTabViewItem *)tabViewItem inTabBar:(PSMTabBarControl *)tabBarControl;
 - (void)tabView:(NSTabView*)aTabView didDropTabViewItem:(NSTabViewItem *)tabViewItem inTabBar:(PSMTabBarControl *)tabBarControl;
 
 //Tear-off tabs methods
-- (NSImage *)tabView:(NSTabView *)aTabView imageForTabViewItem:(NSTabViewItem *)tabViewItem styleMask:(unsigned int *)styleMask;
+- (NSImage *)tabView:(NSTabView *)aTabView imageForTabViewItem:(NSTabViewItem *)tabViewItem styleMask:(NSWindowStyleMask *)styleMask;
 - (PSMTabBarControl *)tabView:(NSTabView *)aTabView newTabBarForDraggedTabViewItem:(NSTabViewItem *)tabViewItem atPoint:(NSPoint)point;
 - (void)tabView:(NSTabView *)aTabView closeWindowForLastTabViewItem:(NSTabViewItem *)tabViewItem;
+- (BOOL)tabViewDragShouldExitWindow:(NSTabView *)tabView;
 
 //Overflow menu validation
 - (BOOL)tabView:(NSTabView *)aTabView validateOverflowMenuItem:(NSMenuItem *)menuItem forTabViewItem:(NSTabViewItem *)tabViewItem;
@@ -128,6 +132,7 @@ extern PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextP
 - (void)tabView:(NSTabView *)tabView closeTab:(id)identifier;
 - (NSTabViewItem *)tabView:(NSTabView *)tabView unknownObjectWasDropped:(id <NSDraggingInfo>)sender;
 - (id)tabView:(PSMTabBarControl *)tabView valueOfOption:(PSMTabBarControlOptionKey)option;
+- (void)tabViewDidClickAddTabButton:(PSMTabBarControl *)tabView;
 
 @end
 
@@ -146,11 +151,11 @@ enum {
     PSMTab_PositionSingleMask = 1 << 7
 };
 
-enum {
+typedef enum {
     PSMTab_TopTab = 0,
     PSMTab_BottomTab = 1,
     PSMTab_LeftTab = 2,
-};
+} PSMTabPosition;
 
 // This view provides a control interface to manage a regular NSTabView.  It looks and works like
 // the tabbed browsing interface of many popular browsers.
@@ -178,6 +183,7 @@ enum {
 @property(nonatomic, assign) BOOL automaticallyAnimates;
 @property(nonatomic, assign) int tabLocation;
 @property(nonatomic, assign) int minimumTabDragDistance;
+@property(nonatomic, readonly) BOOL lainOutWithOverflow;
 
 // If off (the default) always ellipsize the ends of tab titles that don't fit.
 // Of on, ellipsize the start if more tabs share a prefix than a suffix.
@@ -244,5 +250,8 @@ enum {
 - (void)moveTabAtIndex:(NSInteger)sourceIndex
               toTabBar:(PSMTabBarControl *)destinationTabBar
                atIndex:(NSInteger)destinationIndex;
+- (void)backgroundColorWillChange;
+- (id)cellForPoint:(NSPoint)point
+         cellFrame:(NSRectPointer)outFrame;
 
 @end

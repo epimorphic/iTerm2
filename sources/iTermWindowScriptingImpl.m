@@ -45,8 +45,11 @@
                                         hotkeyWindowType:iTermHotkeyWindowTypeNone
                                                  makeKey:YES
                                              canActivate:NO
+                                      respectTabbingMode:NO
                                                  command:command
-                                                   block:nil];
+                                                   block:nil
+                                             synchronous:YES
+                                              completion:nil];
     return [self.ptyDelegate tabForSession:session];
 }
 
@@ -68,8 +71,11 @@
                                         hotkeyWindowType:iTermHotkeyWindowTypeNone
                                                  makeKey:YES
                                              canActivate:NO
+                                      respectTabbingMode:NO
                                                  command:command
-                                                   block:nil];
+                                                   block:nil
+                                             synchronous:YES
+                                              completion:nil];
     return [self.ptyDelegate tabForSession:session];
 }
 

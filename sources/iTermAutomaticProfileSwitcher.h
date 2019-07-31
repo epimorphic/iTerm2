@@ -34,13 +34,16 @@ NS_ASSUME_NONNULL_BEGIN
 // Returns all profiles in user defaults. Exposed for testing.
 - (NSArray<Profile *> *)automaticProfileSwitcherAllProfiles;
 
+// Returns the session's name for logging.
+- (NSString *)automaticProfileSwitcherSessionName;
+
 @end
 
 // This class encapsulates the logic needed by automatic profile switching.
 @interface iTermAutomaticProfileSwitcher : NSObject
 
 // You should set this or nothing will work.
-@property(nonatomic, assign) id<iTermAutomaticProfileSwitcherDelegate> delegate;
+@property(nonatomic, weak) id<iTermAutomaticProfileSwitcherDelegate> delegate;
 @property(nonatomic, readonly) NSString *profileStackString;  // For tests
 
 - (instancetype)initWithDelegate:(id<iTermAutomaticProfileSwitcherDelegate>)delegate NS_DESIGNATED_INITIALIZER;

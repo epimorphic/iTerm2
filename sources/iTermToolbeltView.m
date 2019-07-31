@@ -7,6 +7,7 @@
 #import "iTermDragHandleView.h"
 #import "iTermPreferences.h"
 #import "iTermSystemVersion.h"
+#import "iTermToolActions.h"
 #import "iTermToolWrapper.h"
 #import "iTermToolbeltSplitView.h"
 #import "iTermTuple.h"
@@ -22,6 +23,7 @@
 #import "ToolProfiles.h"
 #import "ToolWebView.h"
 
+NSString *const kActionsToolName = @"Actions";
 NSString *const kCapturedOutputToolName = @"Captured Output";
 NSString *const kCommandHistoryToolName = @"Command History";
 NSString *const kRecentDirectoriesToolName = @"Recent Directories";
@@ -58,6 +60,7 @@ static NSString *const kDynamicToolURL = @"URL";
 
 + (void)initialize {
     gRegisteredTools = [[NSMutableDictionary alloc] init];
+    [iTermToolbeltView registerToolWithName:kActionsToolName withClass:[iTermToolActions class]];
     [iTermToolbeltView registerToolWithName:kCapturedOutputToolName withClass:[ToolCapturedOutputView class]];
     [iTermToolbeltView registerToolWithName:kCommandHistoryToolName withClass:[ToolCommandHistoryView class]];
     [iTermToolbeltView registerToolWithName:kRecentDirectoriesToolName withClass:[ToolDirectoriesView class]];
@@ -261,6 +264,7 @@ static NSString *const kDynamicToolURL = @"URL";
     if (@available(macOS 10.14, *)) {
         switch ((iTermPreferencesTabStyle)[iTermPreferences intForKey:kPreferenceKeyTabStyle]) {
             case TAB_STYLE_AUTOMATIC:
+            case TAB_STYLE_COMPACT:
             case TAB_STYLE_MINIMAL:
                 return [NSColor controlBackgroundColor];
 
@@ -276,6 +280,7 @@ static NSString *const kDynamicToolURL = @"URL";
     NSColor *darkColor = [NSColor colorWithCalibratedWhite:0.12 alpha:1.00];
     switch ([self.effectiveAppearance it_tabStyle:[iTermPreferences intForKey:kPreferenceKeyTabStyle]]) {
         case TAB_STYLE_AUTOMATIC:
+        case TAB_STYLE_COMPACT:
         case TAB_STYLE_MINIMAL:
             assert(NO);
 

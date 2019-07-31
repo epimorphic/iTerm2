@@ -225,6 +225,11 @@ NSString *const iTermAPIServerConnectionClosed = @"iTermAPIServerConnectionClose
         pid_t pid = [iTermLSOF processIDWithConnectionFromAddress:address];
         if (pid == -1) {
             XLog(@"Reject connection from unidentifiable process with address %@", address);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerConnectionRejected
+                                                                    object:nil
+                                                                  userInfo:@{ @"reason": [NSString stringWithFormat:@"Could not get process ID for connection from port %@", @(address.port)] }];
+            });
             dispatch_async(connection.queue, ^{
                 [connection unauthorized];
             });
@@ -263,12 +268,24 @@ NSString *const iTermAPIServerConnectionClosed = @"iTermAPIServerConnectionClose
         dispatch_async(connection.queue, ^{
             [connection badRequest];
         });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerConnectionRejected
+                                                                object:nil
+                                                              userInfo:@{ @"reason": @"Failed to read request from connection",
+                                                                          @"pid": @(pid) }];
+        });
         completion(NO, @"Failed to read request from HTTP connection");
         return;
     }
     if (![request.URL.path isEqualToString:@"/"]) {
         dispatch_async(connection.queue, ^{
             [connection badRequest];
+        });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerConnectionRejected
+                                                                object:nil
+                                                              userInfo:@{ @"reason": [NSString stringWithFormat:@"Bad request. URL path was %@, but should be /", request.URL.path],
+                                                                          @"pid": @(pid) }];
         });
         completion(NO, [NSString stringWithFormat:@"Path %@ not known", request.URL.path]);
         return;
@@ -327,7 +344,11 @@ NSString *const iTermAPIServerConnectionClosed = @"iTermAPIServerConnectionClose
                                                                           @"pid": @(pid) }];
         });
         dispatch_async(connection.queue, ^{
-            [connection badRequest];
+            if ([authReason hasPrefix:iTermWebSocketConnectionLibraryVersionTooOldString]) {
+                [connection unacceptable];
+            } else {
+                [connection badRequest];
+            }
         });
         completion(NO, authReason);
     }
@@ -924,6 +945,7 @@ NSString *const iTermAPIServerConnectionClosed = @"iTermAPIServerConnectionClose
         return;
     }
 
+    _currentKey = webSocketConnection.key;
     switch (request.submessageOneOfCase) {
         case ITMClientOriginatedMessage_Submessage_OneOfCase_TransactionRequest:
             if (request.transactionRequest.begin) {
@@ -1063,6 +1085,7 @@ NSString *const iTermAPIServerConnectionClosed = @"iTermAPIServerConnectionClose
             [self handleInvokeFunctionRequest:request connection:webSocketConnection];
             break;
     }
+    _currentKey = nil;
 }
 
 // Runs on execution queue.

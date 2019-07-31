@@ -16,6 +16,7 @@
 #import "PSMYosemiteTabStyle.h"
 #import "PSMTabDragAssistant.h"
 #import "PTYTask.h"
+#import "NSColor+PSM.h"
 #import "NSWindow+PSM.h"
 
 NSString *const kPSMModifierChangedNotification = @"kPSMModifierChangedNotification";
@@ -46,6 +47,10 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionMinimalStyleBackgroundColorDiffe
 PSMTabBarControlOptionKey PSMTabBarControlOptionColoredMinimalOutlineStrength =
     @"PSMTabBarControlOptionColoredMinimalOutlineStrength";
 PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminence = @"PSMTabBarControlOptionColoredUnselectedTabTextProminence";
+PSMTabBarControlOptionKey PSMTabBarControlOptionDimmingAmount = @"PSMTabBarControlOptionDimmingAmount";
+PSMTabBarControlOptionKey PSMTabBarControlOptionMinimalStyleTreatLeftInsetAsPartOfFirstTab = @"PSMTabBarControlOptionMinimalStyleTreatLeftInsetAsPartOfFirstTab";
+PSMTabBarControlOptionKey PSMTabBarControlOptionMinimumSpaceForLabel =
+    @"PSMTabBarControlOptionMinimumSpaceForLabel";
 
 @interface PSMTabBarControl ()<PSMTabBarControlProtocol>
 @end
@@ -98,17 +103,18 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     return [[PSMTabDragAssistant sharedDragAssistant] isDragging];
 }
 
-- (float)availableCellWidth {
+- (float)availableCellWidthWithOverflow:(BOOL)withOverflow {
     float width = [self frame].size.width;
-    width = width - [_style leftMarginForTabBarControl] - [_style rightMarginForTabBarControl] - _resizeAreaCompensation;
+    width = width - [_style leftMarginForTabBarControl] - [_style rightMarginForTabBarControlWithOverflow:withOverflow
+                                                                                             addTabButton:self.showAddTabButton] - _resizeAreaCompensation;
     return width;
 }
 
-- (NSRect)genericCellRect {
+- (NSRect)genericCellRectWithOverflow:(BOOL)withOverflow {
     NSRect aRect = [self frame];
     aRect.origin.x = [_style leftMarginForTabBarControl];
     aRect.origin.y = 0.0;
-    aRect.size.width = [self availableCellWidth];
+    aRect.size.width = [self availableCellWidthWithOverflow:withOverflow];
     aRect.size.height = self.height;
     return aRect;
 }
@@ -140,7 +146,12 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
         _style = [[PSMYosemiteTabStyle alloc] init];
 
         // the overflow button/menu
-        NSRect overflowButtonRect = NSMakeRect([self frame].size.width - [_style rightMarginForTabBarControl] + 1, 0, [_style rightMarginForTabBarControl] - 1, [self frame].size.height);
+        NSRect overflowButtonRect = NSMakeRect([self frame].size.width - [_style rightMarginForTabBarControlWithOverflow:YES
+                                                                                                            addTabButton:self.showAddTabButton] + 1,
+                                               0,
+                                               [_style rightMarginForTabBarControlWithOverflow:YES
+                                                                                  addTabButton:self.showAddTabButton] - 1,
+                                               [self frame].size.height);
         _overflowPopUpButton = [[PSMOverflowPopUpButton alloc] initWithFrame:overflowButtonRect pullsDown:YES];
         if (_overflowPopUpButton) {
             // configure
@@ -149,9 +160,13 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
         }
 
         // new tab button
-        NSRect addTabButtonRect = NSMakeRect([self frame].size.width - [_style rightMarginForTabBarControl] + 1, 3.0, 16.0, 16.0);
+        NSRect addTabButtonRect = NSMakeRect([self frame].size.width - [_style rightMarginForTabBarControlWithOverflow:YES
+                                                                                                          addTabButton:self.showAddTabButton],
+                                             3,
+                                             23,
+                                             22);
         _addTabButton = [[PSMRolloverButton alloc] initWithFrame:addTabButtonRect];
-        if (_addTabButton){
+        if (_addTabButton) {
             NSImage *newButtonImage = [_style addTabButtonImage];
             if (newButtonImage)
                 [_addTabButton setUsualImage:newButtonImage];
@@ -172,6 +187,8 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
                 [_addTabButton setHidden:YES];
             }
             [_addTabButton setNeedsDisplay:YES];
+            _addTabButton.action = @selector(addTab:);
+            _addTabButton.target = self;
         }
 
         [self registerForDraggedTypes:[NSArray arrayWithObjects:@"com.iterm2.psm.controlitem", nil]];
@@ -319,7 +336,7 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     _style.tabBar = self;
     
     // restyle add tab button
-    if (_addTabButton){
+    if (_addTabButton) {
         NSImage *newButtonImage = [_style addTabButtonImage];
         if (newButtonImage) {
             [_addTabButton setUsualImage:newButtonImage];
@@ -335,6 +352,7 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     }
 
     [self update:_automaticallyAnimates];
+    [self backgroundColorWillChange];
 }
 
 - (void)setOrientation:(PSMTabBarOrientation)value {
@@ -770,6 +788,12 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     partnerView = view;
 }
 
+- (void)backgroundColorWillChange {
+    if (@available(macOS 10.14, *)) {
+        _overflowPopUpButton.appearance = _style.accessoryAppearance;
+    }
+}
+
 #pragma mark -
 #pragma mark Drawing
 
@@ -786,7 +810,8 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     [_style drawTabBar:self
                 inRect:self.bounds
               clipRect:rect
-            horizontal:(_orientation == PSMTabBarHorizontalOrientation)];
+            horizontal:(_orientation == PSMTabBarHorizontalOrientation)
+          withOverflow:_lainOutWithOverflow];
 }
 
 - (void)moveTabAtIndex:(NSInteger)sourceIndex toIndex:(NSInteger)destIndex
@@ -866,16 +891,17 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
             _animationTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 30.0
                                                                target:self
                                                              selector:@selector(_animateCells:)
-                                                             userInfo:[self cellWidthsForHorizontalArrangement]
+                                                             userInfo:[self cellWidthsForHorizontalArrangementWithOverflow:_lainOutWithOverflow]
                                                               repeats:YES];
             return;
         } else {
-            [self finishUpdate:[self cellWidthsForHorizontalArrangement]];
+            [self finishUpdateWithRegularWidths:[self cellWidthsForHorizontalArrangementWithOverflow:NO]
+                             widthsWithOverflow:[self cellWidthsForHorizontalArrangementWithOverflow:YES]];
         }
     } else {
         // Vertical orientation
         CGFloat currentOrigin = [[self style] topMarginForTabBarControl];
-        NSRect cellRect = [self genericCellRect];
+        NSRect cellRect = [self genericCellRectWithOverflow:(NO || _showAddTabButton)];
         NSMutableArray *newOrigins = [NSMutableArray arrayWithCapacity:cellCount];
 
         for (int i = 0; i < cellCount; ++i) {
@@ -885,13 +911,13 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
                 currentOrigin += cellRect.size.height;
             } else {
                 // Out of room, the remaining tabs go into overflow.
-                if ([newOrigins count] > 0 && [self frame].size.height - currentOrigin < 17) {
+                if ([newOrigins count] > 0 && [self frame].size.height - currentOrigin < cellRect.size.height) {
                     [newOrigins removeLastObject];
                 }
                 break;
             }
         }
-        [self finishUpdate:newOrigins];
+        [self finishUpdateWithRegularWidths:newOrigins widthsWithOverflow:newOrigins];
     }
 
     [self setNeedsDisplay];
@@ -899,8 +925,8 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
 
 // Tab widths may vary. Calculate the widths and see if this will work. Only allow sizes to
 // vary if all tabs fit in the allotted space.
-- (NSArray<NSNumber *> *)variableCellWidths {
-    const CGFloat availableWidth = [self availableCellWidth];
+- (NSArray<NSNumber *> *)variableCellWidthsWithOverflow:(BOOL)withOverflow {
+    const CGFloat availableWidth = [self availableCellWidthWithOverflow:withOverflow];
     CGFloat totalDesiredWidth = 0.0;
     NSMutableArray *desiredWidths = [NSMutableArray array];
     for (PSMTabBarCell *cell in _cells) {
@@ -921,26 +947,26 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     }
 }
 
-- (BOOL)shouldUseOptimalWidth {
-    const CGFloat availableWidth = [self availableCellWidth];
+- (BOOL)shouldUseOptimalWidthWithOverflow:(BOOL)withOverflow {
+    const CGFloat availableWidth = [self availableCellWidthWithOverflow:withOverflow];
     // If all cells are the client-specified optimum size, do they fit?
     BOOL canFitAllCellsOptimally = (self.cellOptimumWidth * _cells.count <= availableWidth);
     return !self.stretchCellsToFit && canFitAllCellsOptimally;
 }
 
-- (NSArray<NSNumber *> *)cellWidthsForHorizontalArrangement {
+- (NSArray<NSNumber *> *)cellWidthsForHorizontalArrangementWithOverflow:(BOOL)withOverflow {
     const NSUInteger cellCount = _cells.count;
-    const CGFloat availableWidth = [self availableCellWidth];
+    const CGFloat availableWidth = [self availableCellWidthWithOverflow:withOverflow];
     
     if (self.sizeCellsToFit) {
-        NSArray<NSNumber *> *widths = [self variableCellWidths];
+        NSArray<NSNumber *> *widths = [self variableCellWidthsWithOverflow:withOverflow];
         if (widths) {
             return widths;
         }
     }
     
     NSMutableArray<NSNumber *> *newWidths = [NSMutableArray array];
-    if ([self shouldUseOptimalWidth]) {
+    if ([self shouldUseOptimalWidthWithOverflow:withOverflow]) {
         // Use the client-specified size, even if that leaves unused space on the right.
         for (int i = 0; i < cellCount; i++) {
             [newWidths addObject:@(_cellOptimumWidth)];
@@ -1035,7 +1061,8 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     }
 
     if (!updated) {
-        [self finishUpdate:targetWidths];
+        [self finishUpdateWithRegularWidths:targetWidths
+                         widthsWithOverflow:targetWidths];
         [timer invalidate];
         _animationTimer = nil;
     }
@@ -1043,10 +1070,18 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     [self setNeedsDisplay];
 }
 
-- (void)finishUpdate:(NSArray *)newValues {
+- (void)finishUpdateWithRegularWidths:(NSArray *)regularWidths
+                   widthsWithOverflow:(NSArray *)widthsWithOverflow {
     // Set up overflow menu.
+    NSArray *newValues;
+    if (_showAddTabButton || regularWidths.count < _cells.count) {
+        newValues = widthsWithOverflow;
+    } else {
+        newValues = regularWidths;
+    }
     NSMenu *overflowMenu = [self _setupCells:newValues];
 
+    _lainOutWithOverflow = (overflowMenu != nil || _showAddTabButton);
     if (overflowMenu) {
         [self _setupOverflowMenu:overflowMenu];
     }
@@ -1055,12 +1090,14 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
 
     // Set up add tab button.
     if (!overflowMenu && _showAddTabButton) {
-        NSRect cellRect = [self genericCellRect];
+        NSRect cellRect = [self genericCellRectWithOverflow:YES];
         cellRect.size = [_addTabButton frame].size;
 
         if ([self orientation] == PSMTabBarHorizontalOrientation) {
             cellRect.origin.y = 0;
-            cellRect.origin.x += [[newValues valueForKeyPath:@"@sum.floatValue"] floatValue] + 2;
+            cellRect.origin.x += [[newValues valueForKeyPath:@"@sum.floatValue"] floatValue];
+            cellRect.size.width = 24;
+            cellRect.size.height = self.bounds.size.height;
         } else {
             cellRect.origin.x = 0;
             cellRect.origin.y = [[newValues lastObject] floatValue];
@@ -1073,12 +1110,13 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
 }
 
 - (NSMenu *)_setupCells:(NSArray *)newValues {
-    NSRect cellRect = [self genericCellRect];
-    int i, cellCount = [_cells count], numberOfVisibleCells = [newValues count];
+    const int cellCount = [_cells count];
+    const int numberOfVisibleCells = [newValues count];
+    NSRect cellRect = [self genericCellRectWithOverflow:(_showAddTabButton || cellCount > numberOfVisibleCells)];
     NSMenu *overflowMenu = nil;
 
     // Set up cells with frames and rects
-    for (i = 0; i < cellCount; i++) {
+    for (int i = 0; i < cellCount; i++) {
         PSMTabBarCell *cell = [_cells objectAtIndex:i];
         int tabState = 0;
         if (i < numberOfVisibleCells) {
@@ -1207,16 +1245,17 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     return overflowMenu;
 }
 
-- (void)_setupOverflowMenu:(NSMenu *)overflowMenu
-{
+- (void)_setupOverflowMenu:(NSMenu *)overflowMenu {
     NSRect cellRect;
     int i;
 
     cellRect.size.height = self.height;
-    cellRect.size.width = [_style rightMarginForTabBarControl];
+    cellRect.size.width = [_style rightMarginForTabBarControlWithOverflow:YES
+                                                             addTabButton:self.showAddTabButton];
     if ([self orientation] == PSMTabBarHorizontalOrientation) {
         cellRect.origin.y = 0;
-        cellRect.origin.x = [self frame].size.width - [_style rightMarginForTabBarControl] + (_resizeAreaCompensation ? -_resizeAreaCompensation : 1);
+        cellRect.origin.x = [self frame].size.width - [_style rightMarginForTabBarControlWithOverflow:YES
+                                                                                         addTabButton:self.showAddTabButton] + (_resizeAreaCompensation ? -_resizeAreaCompensation : 1);
     } else {
         cellRect.origin.x = 0;
         cellRect.origin.y = [self frame].size.height - self.height;
@@ -1250,8 +1289,7 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     }
 }
 
-- (void)_setupAddTabButton:(NSRect)frame
-{
+- (void)_setupAddTabButton:(NSRect)frame {
     if (![[self subviews] containsObject:_addTabButton]) {
         [self addSubview:_addTabButton];
     }
@@ -1310,21 +1348,13 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
             _closeClicked = YES;
         } else {
             [cell setCloseButtonPressed:NO];
-            if ([theEvent clickCount] == 2) {
-                [self performSelector:@selector(tabDoubleClick:) withObject:cell];
-            }
-            else {
+            if ([theEvent clickCount] == 1) {
                 if (_selectsTabsOnMouseDown) {
-                    [self performSelector:@selector(tabClick:) withObject:cell];
+                    [self tabClick:cell];
                 }
             }
         }
         [self setNeedsDisplay];
-    }
-    else {
-        if ([theEvent clickCount] == 2) {
-            [self performSelector:@selector(tabBarDoubleClick)];
-        }
     }
 }
 
@@ -1408,44 +1438,68 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     }
 }
 
-- (void)mouseUp:(NSEvent *)theEvent
-{
+- (void)mouseUp:(NSEvent *)theEvent {
     _haveInitialDragLocation = NO;
     if (_resizing) {
         _resizing = NO;
         [[NSCursor arrowCursor] set];
-    } else {
-        // what cell?
-        NSPoint mousePt = [self convertPoint:[theEvent locationInWindow] fromView:nil];
-        NSRect cellFrame, mouseDownCellFrame;
-        PSMTabBarCell *cell = [self cellForPoint:mousePt cellFrame:&cellFrame];
-        PSMTabBarCell *mouseDownCell = [self cellForPoint:[self convertPoint:[[self lastMouseDownEvent] locationInWindow] fromView:nil] cellFrame:&mouseDownCellFrame];
-        if (cell) {
-            NSPoint trackingStartPoint = [self convertPoint:[[self lastMouseDownEvent] locationInWindow] fromView:nil];
-            NSRect iconRect = [mouseDownCell closeButtonRectForFrame:mouseDownCellFrame];
-
-            if ((NSMouseInRect(mousePt, iconRect,[self isFlipped])) &&
-                cell.closeButtonVisible &&
-                [mouseDownCell closeButtonPressed]) {
-                [self performSelector:@selector(closeTabClick:) withObject:cell];
-            } else if (NSMouseInRect(mousePt,
-                                     mouseDownCellFrame,
-                                     [self isFlipped]) &&
-                       (!NSMouseInRect(trackingStartPoint,
-                                       [cell closeButtonRectForFrame:cellFrame],
-                                       [self isFlipped]) ||
-                        [self disableTabClose] ||
-                        ![self allowsBackgroundTabClosing])) {
-                [mouseDownCell setCloseButtonPressed:NO];
-                [self performSelector:@selector(tabClick:) withObject:cell];
-            } else {
-                [mouseDownCell setCloseButtonPressed:NO];
-                [self performSelector:@selector(tabNothing:) withObject:cell];
-            }
-        }
-
-        _closeClicked = NO;
+        return;
     }
+
+    [self handleMouseUp:theEvent];
+
+    _closeClicked = NO;
+}
+
+- (void)handleMouseUp:(NSEvent * _Nonnull)theEvent {
+    const NSPoint clickPoint = [self convertPoint:[theEvent locationInWindow] fromView:nil];
+    NSRect cellFrame;
+    PSMTabBarCell *const cell = [self cellForPoint:clickPoint cellFrame:&cellFrame];
+
+    NSRect mouseDownCellFrame;
+    PSMTabBarCell *mouseDownCell = [self cellForPoint:[self convertPoint:[[self lastMouseDownEvent] locationInWindow] fromView:nil] cellFrame:&mouseDownCellFrame];
+    const NSRect iconRect = [mouseDownCell closeButtonRectForFrame:mouseDownCellFrame];
+    const BOOL clickedInCloseButton = NSMouseInRect(clickPoint, iconRect, [self isFlipped]);
+
+    if (clickedInCloseButton &&
+        cell.closeButtonVisible &&
+        [mouseDownCell closeButtonPressed]) {
+        // Clicked on close button
+        [self closeTabClick:cell];
+        return;
+    }
+
+    if (cell == nil && [theEvent clickCount] == 2) {
+        [self tabBarDoubleClick];
+    }
+
+    const BOOL mouseUpInSameCellAsMouseDown = NSMouseInRect(clickPoint, mouseDownCellFrame, [self isFlipped]);
+    const NSPoint trackingStartPoint = [self convertPoint:[[self lastMouseDownEvent] locationInWindow] fromView:nil];
+    const BOOL mouseDownWasInCloseButton = NSMouseInRect(trackingStartPoint, [cell closeButtonRectForFrame:cellFrame], [self isFlipped]);
+    const BOOL closeButtonDoesNotInterfere = (!mouseDownWasInCloseButton ||
+                                              [self disableTabClose] ||
+                                              ![self allowsBackgroundTabClosing]);
+
+    if (mouseUpInSameCellAsMouseDown && closeButtonDoesNotInterfere) {
+        // Is a valid click on the tab.
+        [mouseDownCell setCloseButtonPressed:NO];
+        switch (theEvent.clickCount) {
+            case 1:
+                [self tabClick:cell];
+                return;
+
+            case 2:
+                [self tabDoubleClick:cell];
+                return;
+
+            default:
+                return;
+        }
+    }
+
+    // Weird cases we don't care about, like mouse down in one cell and mouse up in another.
+    [mouseDownCell setCloseButtonPressed:NO];
+    [self tabNothing:cell];
 }
 
 - (NSMenu *)menuForEvent:(NSEvent *)event
@@ -1507,10 +1561,11 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
 
 - (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)sender {
     if ([[[sender draggingPasteboard] types] indexOfObject:@"com.iterm2.psm.controlitem"] != NSNotFound) {
-        if ([[self delegate] respondsToSelector:@selector(tabView:shouldDropTabViewItem:inTabBar:)] &&
+        if ([[self delegate] respondsToSelector:@selector(tabView:shouldDropTabViewItem:inTabBar:moveSourceWindow:)] &&
             ![[self delegate] tabView:[[sender draggingSource] tabView]
                 shouldDropTabViewItem:[[[PSMTabDragAssistant sharedDragAssistant] draggedCell] representedObject]
-                             inTabBar:self]) {
+                             inTabBar:self
+                     moveSourceWindow:nil]) {
             return NSDragOperationNone;
         }
 
@@ -1533,10 +1588,11 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
 
     if ([[[sender draggingPasteboard] types] indexOfObject:@"com.iterm2.psm.controlitem"] != NSNotFound) {
 
-        if ([[self delegate] respondsToSelector:@selector(tabView:shouldDropTabViewItem:inTabBar:)] &&
+        if ([[self delegate] respondsToSelector:@selector(tabView:shouldDropTabViewItem:inTabBar:moveSourceWindow:)] &&
             ![[self delegate] tabView:[[sender draggingSource] tabView]
                 shouldDropTabViewItem:[[[PSMTabDragAssistant sharedDragAssistant] draggedCell] representedObject]
-                             inTabBar:self]) {
+                             inTabBar:self
+                     moveSourceWindow:nil]) {
             return NSDragOperationNone;
         }
 
@@ -1640,6 +1696,12 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
 - (void)tabBarDoubleClick {
     if ([[self delegate] respondsToSelector:@selector(tabViewDoubleClickTabBar:)]) {
         [[self delegate] tabViewDoubleClickTabBar:[self tabView]];
+    }
+}
+
+- (void)addTab:(id)sender {
+    if ([self.delegate respondsToSelector:@selector(tabViewDidClickAddTabButton:)]) {
+        [self.delegate tabViewDidClickAddTabButton:self];
     }
 }
 
@@ -2028,9 +2090,10 @@ PSMTabBarControlOptionKey PSMTabBarControlOptionColoredUnselectedTabTextProminen
     return temp;
 }
 
-- (id)cellForPoint:(NSPoint)point cellFrame:(NSRectPointer)outFrame
-{
-    if ([self orientation] == PSMTabBarHorizontalOrientation && !NSPointInRect(point, [self genericCellRect])) {
+- (id)cellForPoint:(NSPoint)point
+         cellFrame:(NSRectPointer)outFrame {
+    if ([self orientation] == PSMTabBarHorizontalOrientation &&
+        !NSPointInRect(point, [self genericCellRectWithOverflow:_lainOutWithOverflow])) {
         return nil;
     }
 

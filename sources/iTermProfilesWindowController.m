@@ -29,6 +29,7 @@
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermApplicationDelegate.h"
 #import "iTermController.h"
+#import "NSEvent+iTerm.h"
 #import "PreferencePanel.h"
 #import "PseudoTerminal.h"
 #import "PTYTab.h"
@@ -51,7 +52,7 @@ static NSString *const kCloseBookmarksWindowAfterOpeningKey = @"CloseBookmarksWi
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     DLog(@"iTermProfileWindowContentView: Perform key equivalent: %@", event);
     if ([event.characters isEqualToString:@"\r"]) {
-        if (event.modifierFlags & NSEventModifierFlagShift) {
+        if (event.it_modifierFlags & NSEventModifierFlagShift) {
             if (self.windowController.windowButton.isEnabled) {
                 [self.windowController openBookmarkInWindow:nil];
                 return YES;
@@ -186,10 +187,12 @@ typedef enum {
         if (inPane != NO_PANE && terminal != nil) {
             [terminal splitVertically:(inPane == VERTICAL_PANE)
                          withBookmark:bookmark
-                        targetSession:[[terminal currentTab] activeSession]];
+                        targetSession:[[terminal currentTab] activeSession]
+                          synchronous:NO];
         } else {
             [[iTermController sharedInstance] launchBookmark:bookmark
-                                                  inTerminal:terminal];
+                                                  inTerminal:terminal
+                                          respectTabbingMode:NO];
         }
         isFirst = NO;
     }
@@ -302,7 +305,8 @@ typedef enum {
         PseudoTerminal* terminal = [[iTermController sharedInstance] currentTerminal];
         Profile* bookmark = [[ProfileModel sharedInstance] bookmarkWithGuid:guid];
         [[iTermController sharedInstance] launchBookmark:bookmark
-                                              inTerminal:terminal];
+                                              inTerminal:terminal
+                                      respectTabbingMode:NO];
     }
     if ([closeAfterOpeningBookmark_ state] == NSOnState) {
         [[self window] close];

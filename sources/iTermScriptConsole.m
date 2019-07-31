@@ -58,6 +58,8 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
 
 - (void)awakeFromNib {
     _callsView.textColor = [NSColor textColor];
+    NSScrollView *scrollView = _callsView.enclosingScrollView;
+    scrollView.horizontalScrollElasticity = NSScrollElasticityNone;
 }
 
 - (void)makeTextViewHorizontallyScrollable:(NSTextView *)textView {
@@ -276,7 +278,6 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
         _logsView.string = @"";
         _callsView.string = @"";
         _terminateButton.enabled = NO;
-        _startButton.title = @"Start";
         _startButton.enabled = NO;
     } else {
         [self scrollLogsToBottomIfNeeded];

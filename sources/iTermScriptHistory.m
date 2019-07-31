@@ -10,6 +10,7 @@
 #import "DebugLogging.h"
 #import "iTermAPIServer.h"
 #import "iTermAPIHelper.h"
+#import "iTermUserDefaults.h"
 #import "iTermWebSocketConnection.h"
 #import "NSArray+iTerm.h"
 #import "NSObject+iTerm.h"
@@ -41,6 +42,18 @@ NSString *const iTermScriptHistoryEntryFieldRPCValue = @"rpc";
     return instance;
 }
 
++ (instancetype)apsEntry {
+    static id instance;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[self alloc] initWithName:@"Automatic Profile Switching"
+                                     fullPath:nil
+                                   identifier:@"__APS"
+                                     relaunch:nil];
+    });
+    return instance;
+}
+
 - (instancetype)initWithName:(NSString *)name
                     fullPath:(nullable NSString *)fullPath
                   identifier:(NSString *)identifier
@@ -56,7 +69,7 @@ NSString *const iTermScriptHistoryEntryFieldRPCValue = @"rpc";
         _dateFormatter = [[NSDateFormatter alloc] init];
         _logLines = [NSMutableArray array];
         _callEntries = [NSMutableArray array];
-        _dateFormatter.dateFormat = [NSDateFormatter dateFormatFromTemplate:@"Ld jj:mm:ss"
+        _dateFormatter.dateFormat = [NSDateFormatter dateFormatFromTemplate:@"Ld jj:mm:ssSSS"
                                                                     options:0
                                                                      locale:[NSLocale currentLocale]];
         [[NSNotificationCenter defaultCenter] addObserver:self
@@ -207,6 +220,7 @@ NSString *const iTermScriptHistoryNumberOfEntriesDidChangeNotification = @"iTerm
 @implementation iTermScriptHistory {
     NSMutableArray<iTermScriptHistoryEntry *> *_entries;
     NSMutableSet<NSNumber *> *_replPIDs;
+    BOOL _haveAddedAPSLoggingEntry;
 }
 
 + (instancetype)sharedInstance {
@@ -222,10 +236,25 @@ NSString *const iTermScriptHistoryNumberOfEntriesDidChangeNotification = @"iTerm
     self = [super init];
     if (self) {
         _entries = [NSMutableArray array];
+        [self addAPSLoggingEntryIfNeeded];
         [_entries addObject:[iTermScriptHistoryEntry globalEntry]];
         _replPIDs = [NSMutableSet set];
     }
     return self;
+}
+
+- (void)addAPSLoggingEntryIfNeeded {
+    if (_haveAddedAPSLoggingEntry) {
+        return;
+    }
+    if ([iTermUserDefaults enableAutomaticProfileSwitchingLogging]) {
+        _haveAddedAPSLoggingEntry = YES;
+        [_entries addObject:[iTermScriptHistoryEntry apsEntry]];
+        if (_entries.count != 1) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermScriptHistoryNumberOfEntriesDidChangeNotification
+                                                                object:self];
+        }
+    }
 }
 
 - (NSArray<iTermScriptHistoryEntry *> *)runningEntries {

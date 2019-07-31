@@ -12,7 +12,7 @@
 @implementation NSView (iTerm)
 
 - (NSImage *)snapshot {
-    return [[[NSImage alloc] initWithData:[self dataWithPDFInsideRect:[self bounds]]] autorelease];
+    return [[NSImage alloc] initWithData:[self dataWithPDFInsideRect:[self bounds]]];
 }
 
 - (void)insertSubview:(NSView *)subview atIndex:(NSInteger)index {
@@ -39,8 +39,8 @@
     NSRect frame1 = subview1.frame;
     NSRect frame2 = subview2.frame;
 
-    NSView *filler1 = [[[NSView alloc] initWithFrame:subview1.frame] autorelease];
-    NSView *filler2 = [[[NSView alloc] initWithFrame:subview2.frame] autorelease];
+    NSView *filler1 = [[NSView alloc] initWithFrame:subview1.frame];
+    NSView *filler2 = [[NSView alloc] initWithFrame:subview2.frame];
 
     [self replaceSubview:subview1 with:filler1];
     [self replaceSubview:subview2 with:filler2];
@@ -66,11 +66,9 @@
                                           completion:^(BOOL finished) {
                                               delayedPerform.completed = YES;
                                               completion(finished);
-                                              [delayedPerform release];
                                           }];
                        } else {
                            completion(NO);
-                           [delayedPerform release];
                        }
                    });
     return delayedPerform;
@@ -112,6 +110,35 @@
         scale = 1;
     }
     return round(scale * value) / scale;
+}
+
+- (CGFloat)retinaRoundUp:(CGFloat)value {
+    NSWindow *window = self.window;
+    CGFloat scale = window.backingScaleFactor;
+    if (!scale) {
+        scale = [[NSScreen mainScreen] backingScaleFactor];
+    }
+    if (!scale) {
+        scale = 1;
+    }
+    return ceil(scale * value) / scale;
+}
+
+- (CGRect)retinaRoundRect:(CGRect)rect {
+    NSRect result = NSMakeRect([self retinaRound:NSMinX(rect)],
+                               [self retinaRound:NSMinY(rect)],
+                               [self retinaRoundUp:NSWidth(rect)],
+                               [self retinaRoundUp:NSHeight(rect)]);
+    return result;
+}
+
+- (BOOL)containsDescendant:(NSView *)possibleDescendant {
+    for (NSView *subview in self.subviews) {
+        if (subview == possibleDescendant || [subview containsDescendant:possibleDescendant]) {
+            return YES;
+        }
+    }
+    return NO;
 }
 
 @end

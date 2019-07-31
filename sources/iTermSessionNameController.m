@@ -38,6 +38,7 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
     NSMutableArray *_iconTitleStack;
 
     NSString *_cachedEvaluation;
+    NSString *_cachedBuiltInWindowTitleEvaluation;
     BOOL _needsUpdate;
     NSInteger _count;
     NSInteger _appliedCount;
@@ -68,14 +69,28 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
 }
 
 - (NSDictionary *)stateDictionary {
-    return @{ iTermSessionNameControllerStateKeyWindowTitleStack: _windowTitleStack ?: @[],
-              iTermSessionNameControllerStateKeyIconTitleStack: _iconTitleStack ?: @[] };
+    return @{ iTermSessionNameControllerStateKeyWindowTitleStack: [_windowTitleStack it_arrayByReplacingOccurrencesOf:[NSNull null] with:@0] ?: @[],
+              iTermSessionNameControllerStateKeyIconTitleStack: [_iconTitleStack it_arrayByReplacingOccurrencesOf:[NSNull null] with:@0] ?: @[] };
 }
 
 - (void)restoreNameFromStateDictionary:(NSDictionary *)state {
-    _windowTitleStack = [state[iTermSessionNameControllerStateKeyWindowTitleStack] mutableCopy];
-    _iconTitleStack = [state[iTermSessionNameControllerStateKeyIconTitleStack] mutableCopy];
+    _windowTitleStack = [[state[iTermSessionNameControllerStateKeyWindowTitleStack] it_arrayByReplacingOccurrencesOf:@0 with:[NSNull null]] mutableCopy];
+    _iconTitleStack = [[state[iTermSessionNameControllerStateKeyIconTitleStack] it_arrayByReplacingOccurrencesOf:@0 with:[NSNull null]] mutableCopy];
     [self.delegate sessionNameControllerDidChangeWindowTitle];
+}
+
+- (NSString *)invocationForTitleProviderID:(NSString *)uniqueIdentifier {
+    if ([uniqueIdentifier isEqualToString:iTermSessionNameControllerSystemTitleUniqueIdentifier]) {
+        return @"iterm2.private.session_title(session: session.id)";
+    }
+    return [[iTermAPIHelper sessionTitleFunctions] objectPassingTest:^BOOL(iTermSessionTitleProvider *provider, NSUInteger index, BOOL *stop) {
+        return [provider.uniqueIdentifier isEqualToString:uniqueIdentifier];
+    }].invocation;
+}
+
+- (BOOL)usingBuiltInTitleProvider {
+    NSString *uniqueIdentifier = self.delegate.sessionNameControllerUniqueIdentifier;
+    return [uniqueIdentifier isEqualToString:iTermSessionNameControllerSystemTitleUniqueIdentifier];
 }
 
 // Synchronous evaluation updates _dependencies with all paths occurring in the title format.
@@ -97,14 +112,7 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
         completion(@"");
         return;
     }
-    NSString *invocation = [[iTermAPIHelper sessionTitleFunctions] objectPassingTest:^BOOL(iTermSessionTitleProvider *provider, NSUInteger index, BOOL *stop) {
-        return [provider.uniqueIdentifier isEqualToString:uniqueIdentifier];
-    }].invocation;
-    if (!invocation) {
-        if ([uniqueIdentifier isEqualToString:iTermSessionNameControllerSystemTitleUniqueIdentifier]) {
-            invocation = @"iterm2.private.session_title(session: session.id)";
-        }
-    }
+    NSString *invocation = [self invocationForTitleProviderID:uniqueIdentifier];
     if (!invocation) {
         [self didEvaluateInvocationWithResult:@"…"];
         completion(@"…");
@@ -113,53 +121,42 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
     [iTermScriptFunctionCall callFunction:invocation
                                   timeout:sync ? 0 : 30
                                     scope:scope
+                               retainSelf:YES
                                completion:
      ^(NSString *possiblyEmptyResult, NSError *error, NSSet<NSString *> *missing) {
+         NSString *result = [weakSelf valueForInvocation:invocation
+                                              withResult:possiblyEmptyResult
+                                                   error:error];
          if (error) {
-             NSString *message =
-             [NSString stringWithFormat:@"Invoked “%@” to compute name for session. Failed with error:\n%@\n",
-              invocation,
-              [error localizedDescription]];
-             NSString *detail = error.localizedFailureReason;
-             if (detail) {
-                 message = [message stringByAppendingFormat:@"%@\n", detail];
-             }
-             NSString *connectionKey =
-                 error.userInfo[iTermAPIHelperFunctionCallErrorUserInfoKeyConnection];
-             iTermScriptHistoryEntry *entry =
-                [[iTermScriptHistory sharedInstance] entryWithIdentifier:connectionKey];
-             if (!entry) {
-                 entry = [iTermScriptHistoryEntry globalEntry];
-             }
-             [entry addOutput:message];
-         }
-
-         NSString *result = [possiblyEmptyResult stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-         if (error) {
-             if (error.code == iTermAPIHelperFunctionCallUnregisteredErrorCode &&
-                 [error.domain isEqual:@"com.iterm2.api"]) {
-                 // Waiting for the function to be registered
-                 result = @"…";
-                 [self logMessage:[NSString stringWithFormat:@"Could not make a function call into a script. Either its signature changed (in which case you should update the session title setting) or the script is not running. The failed invocation was:\n%@", invocation]
-                       invocation:invocation];
-             } else {
-                 [self logMessage:error.localizedDescription
-                       invocation:invocation];
-                 result = @"🐞";
-             }
-         } else if (result.length == 0) {
-             result = @" ";
+             [weakSelf logError:error forInvocation:invocation];
          }
          if (!sync) {
              [weakSelf didEvaluateInvocationWithResult:result];
          }
          completion(result);
      }];
+    if ([uniqueIdentifier isEqualToString:iTermSessionNameControllerSystemTitleUniqueIdentifier]) {
+        // Do it again to get the window title. We know this completes synchronously.
+        __block NSString *windowTitle = nil;
+        [iTermScriptFunctionCall callFunction:@"iterm2.private.window_title(session: session.id)"
+                                      timeout:0
+                                        scope:scope
+                                   retainSelf:YES
+                                   completion:
+         ^(NSString *possiblyEmptyResult, NSError *error, NSSet<NSString *> *missing) {
+             windowTitle = [weakSelf valueForInvocation:invocation
+                                             withResult:possiblyEmptyResult
+                                                  error:error];
+         }];
+        _cachedBuiltInWindowTitleEvaluation = windowTitle;
+    } else {
+        _cachedBuiltInWindowTitleEvaluation = nil;
+    }
     if (recordingScope) {
         // Add tmux variables we use for adding formatting.
         for (NSString *tmuxVariableName in @[ iTermVariableKeySessionTmuxClientName,
                                               iTermVariableKeySessionTmuxRole,
-                                              iTermVariableKeySessionTmuxWindowTitle ]) {
+                                              iTermVariableKeySessionTmuxPaneTitle ]) {
             [scope valueForVariableName:tmuxVariableName];
         }
         for (iTermVariableReference *ref in _refs) {
@@ -172,6 +169,49 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
             };
         }
     }
+}
+
+- (BOOL)errorIsUnregisteredFunctionCall:(NSError *)error {
+    return (error.code == iTermAPIHelperErrorCodeUnregisteredFunction &&
+            [error.domain isEqual:iTermAPIHelperErrorDomain]);
+}
+
+- (void)logError:(NSError *)error forInvocation:(NSString *)invocation {
+    NSString *message = [NSString stringWithFormat:@"Invoked “%@” to compute name for session. Failed with error:\n%@\n",
+                         invocation,
+                         [error localizedDescription]];
+    NSString *detail = error.localizedFailureReason;
+    if (detail) {
+        message = [message stringByAppendingFormat:@"%@\n", detail];
+    }
+    NSString *connectionKey = error.userInfo[iTermAPIHelperFunctionCallErrorUserInfoKeyConnection];
+    iTermScriptHistoryEntry *entry = [[iTermScriptHistory sharedInstance] entryWithIdentifier:connectionKey];
+    if (!entry) {
+        entry = [iTermScriptHistoryEntry globalEntry];
+    }
+    [entry addOutput:message];
+    if ([self errorIsUnregisteredFunctionCall:error]) {
+        [self logMessage:[NSString stringWithFormat:@"Could not make a function call into a script. Either its unique identifier changed (in which case you should update your settings in Prefs > Profiles > General > Title) or the script is not running. The failed invocation was:\n%@", invocation]
+              invocation:invocation];
+    } else {
+        [self logMessage:error.localizedDescription
+              invocation:invocation];
+    }
+}
+
+- (NSString *)valueForInvocation:(NSString *)invocation
+                      withResult:(NSString *)possiblyEmptyResult
+                           error:(NSError *)error {
+    if (!error) {
+        NSString *result = [possiblyEmptyResult stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (result.length == 0) {
+            result = @" ";
+        }
+        return result;
+    }
+
+    const BOOL isUnregistered = [self errorIsUnregisteredFunctionCall:error];
+    return isUnregistered ? @"…" : @"🐞";
 }
 
 - (void)logMessage:(NSString *)message invocation:(NSString *)invocation {
@@ -196,7 +236,23 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
 
 - (NSString *)presentationWindowTitle {
     [self updateIfNeeded];
-    return [self formattedName:self.windowNameFromVariable ?: _cachedEvaluation];
+
+    if ([self usingBuiltInTitleProvider] && _cachedBuiltInWindowTitleEvaluation) {
+        // We're using a standard window title (not provided by a script). Use the window version of
+        // the session title. This combines the OSC 0/2 window title (if any) with other title components.
+        return [self formattedName:_cachedBuiltInWindowTitleEvaluation];
+    } else if (self.windowNameFromVariable) {
+        // Using a custom title provider and there's an OSC 0/OSC 2 window title set. That overrides
+        // the title provider's value. Some day I should add support for window title providers, but
+        // for now they are just *session* title providers.
+        return [self formattedName:self.windowNameFromVariable];
+    } else {
+        // Either we're using a builtin title provider but haven't cached it for some reason (this
+        // should not happen), or there's a custom title provider not overridden by OSC 0/OSC 2.
+        // Finally, if lots of impossible things happen return Unnamed so we
+        // can correlate bug reports with this comment. Hi, future me.
+        return [self formattedName:_cachedEvaluation ?: @"Unnamed"];
+    }
 }
 
 - (NSString *)presentationSessionTitle {
@@ -282,7 +338,12 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
         // window name. This is confusing: this refers to the name of a tmux window, which is
         // equivalent to an iTerm2 tab. It is reported to us by tmux. We ignore the base name
         // because the real name comes from the server and that's all we care about.
-        return [NSString stringWithFormat:@"↣ %@", descriptor.tmuxWindowName];
+        if (self.delegate.sessionNameControllerUniqueIdentifier) {
+            // Using a custom title provider.
+            return [NSString stringWithFormat:@"↣ %@", base];
+        } else {
+            return [NSString stringWithFormat:@"↣ %@", descriptor.tmuxWindowName];
+        }
     }
     return base;
 }
@@ -345,6 +406,7 @@ NSString *const iTermSessionNameControllerSystemTitleUniqueIdentifier = @"com.it
 #pragma mark - Notifications
 
 - (void)didRegisterSessionTitleFunc:(NSNotification *)notification {
+    _cachedEvaluation = nil;  // Force references to be recomputed
     [self setNeedsReevaluation];
 }
 

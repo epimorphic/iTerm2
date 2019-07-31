@@ -131,7 +131,9 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
     prefs.javaEnabled = NO;
     prefs.javaScriptEnabled = YES;
     prefs.javaScriptCanOpenWindowsAutomatically = NO;
-    [prefs _setWebSecurityEnabled:NO];
+    if (@available(macOS 10.13, *)) {
+        [prefs _setWebSecurityEnabled:NO];
+    };
     @try {
         // oh ffs, you have to do this to get the web inspector to show up
         [prefs setValue:@YES forKey:@"developerExtrasEnabled"];
@@ -207,6 +209,7 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
         [iTermScriptFunctionCall callFunction:invocation
                                       timeout:[[NSDate distantFuture] timeIntervalSinceNow]
                                         scope:scope
+                                   retainSelf:YES
                                    completion:^(id value, NSError *error, NSSet<NSString *> *missing) {
                                        if (error) {
                                            [delegate itermWebViewScriptInvocation:invocation

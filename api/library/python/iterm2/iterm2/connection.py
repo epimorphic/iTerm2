@@ -76,7 +76,17 @@ class Connection:
         """
         connection = Connection()
         cookie, key = _cookie_and_key()
-        connection.websocket = await websockets.connect(_uri(), extra_headers=_headers(), subprotocols=_subprotocols())
+        try:
+            connection.websocket = await websockets.connect(
+                    _uri(),
+                    ping_interval=None,
+                    extra_headers=_headers(),
+                    subprotocols=_subprotocols())
+        except websockets.exceptions.InvalidStatusCode as e:
+            if e.status_code == 406:
+                print("This version of the iterm2 module is too old for the current version of iTerm2. Please upgrade.")
+                sys.exit(1)
+            raise
         connection.__dispatch_forever_future = asyncio.ensure_future(connection._async_dispatch_forever(connection, asyncio.get_event_loop()))
         return connection
 
@@ -91,17 +101,17 @@ class Connection:
         self.__dispatch_forever_future = None
 
     def _collect_garbage(self):
-        """Asyncio seems to want you to keep a reference to a task that's begin
+        """Asyncio seems to want you to keep a reference to a task that's being
         run with ensure_future. If you don't, it says "task was destroyed but
         it is still pending". So, ok, we'll keep references around until we
         don't need to any more."""
         self.__tasks = list(filter(lambda t: not t.done(), self.__tasks))
 
-    def run_until_complete(self, coro):
-        self.run(False, coro)
+    def run_until_complete(self, coro, retry, debug=False):
+        self.run(False, coro, retry, debug)
 
-    def run_forever(self, coro):
-        self.run(True, coro)
+    def run_forever(self, coro, retry, debug=False):
+        self.run(True, coro, retry, debug)
 
     def set_message_in_future(self, loop, message, future):
         assert future is not None
@@ -141,18 +151,22 @@ class Connection:
             traceback.print_exc()
             raise
 
-    def run(self, forever, coro):
+    def run(self, forever, coro, retry, debug=False):
         """
         Convenience method to start a program.
 
         Connects to the API endpoint, begins an asyncio event loop, and runs the
         passed in coroutine. Exceptions will be caught and printed to stdout.
 
+        :param forever: Don't terminate after main returns?
         :param coro: A coroutine (async function) to run after connecting.
+        :param retry: Keep trying to connect until it succeeds?
         """
         loop = asyncio.get_event_loop()
 
         async def async_main(connection):
+            # Set __tasks here in case coro returns before _async_dispatch_forever starts.
+            self.__tasks = []
             dispatch_forever_task = asyncio.ensure_future(self._async_dispatch_forever(connection, loop))
             await coro(connection)
             if forever:
@@ -162,11 +176,9 @@ class Connection:
             for task in self.__tasks:
                 task.cancel()
 
-        # This keeps you from pulling your hair out. The downside is uncertain, but
-        # I do know that pulling my hair out hurts.
-        loop.set_debug(True)
+        loop.set_debug(debug)
         self.loop = loop
-        loop.run_until_complete(self.async_connect(async_main))
+        loop.run_until_complete(self.async_connect(async_main, retry))
 
 
     async def async_send_message(self, message):
@@ -230,7 +242,19 @@ class Connection:
             except Exception:
                 raise
 
-    async def async_connect(self, coro):
+    @property
+    def iterm2_protocol_version(self):
+        """Returns a tuple (major version, minor version) or 0,0 if it's an old version of iTerm2 that doesn't report its version or it's unknown."""
+        key = "X-iTerm2-Protocol-Version"
+        if key not in self.websocket.response_headers:
+            return (0, 0)
+        s = self.websocket.response_headers[key]
+        parts = s.split(".")
+        if len(parts) != 2:
+            return (0, 0)
+        return (int(parts[0]), int(parts[1]))
+
+    async def async_connect(self, coro, retry=False):
         """
         Establishes a websocket connection.
 
@@ -244,29 +268,76 @@ class Connection:
         of this program with its entry in the scripting console.
 
         :param coro: A coroutine to run once connected.
+        :param retry: Keep trying to connect until it succeeds?
         """
-        async with websockets.connect(_uri(), extra_headers=_headers(), subprotocols=_subprotocols()) as websocket:
-            self.websocket = websocket
+        done = False
+        while not done:
             try:
-                await coro(self)
-            except Exception as _err:
-                traceback.print_exc()
-                sys.exit(1)
+                async with websockets.connect(
+                        _uri(),
+                        ping_interval=None,
+                        extra_headers=_headers(),
+                        subprotocols=_subprotocols()) as websocket:
+                    done = True
+                    self.websocket = websocket
+                    try:
+                        await coro(self)
+                    except Exception as _err:
+                        traceback.print_exc()
+                        sys.exit(1)
+            except websockets.exceptions.InvalidStatusCode as e:
+                if e.status_code == 406:
+                    print("This version of the iterm2 module is too old for the current version of iTerm2. Please upgrade.")
+                    sys.exit(1)
+                raise
+            except websockets.exceptions.InvalidMessage:
+                # This is a temporary workaround for this issue:
+                #
+                # https://gitlab.com/gnachman/iterm2/issues/7681#note_163548399
+                # https://github.com/aaugustin/websockets/issues/604
+                #
+                # I'm leaving the print statement in because I'm worried this might
+                # have unexpected consequences, as InvalidMessage is certainly
+                # not very specific.
+                print("websockets.connect failed with InvalidMessage. Retrying.")
+            except (ConnectionRefusedError, OSError) as e:
+                # https://github.com/aaugustin/websockets/issues/593
+                if retry:
+                    await asyncio.sleep(0.5)
+                else:
+                    print("""
+There was a problem connecting to iTerm2.
+
+Please check the following:
+  * Ensure the Python API is enabled in iTerm2's preferences
+  * Ensure iTerm2 is running
+  * Ensure script is running on the same machine as iTerm2
+
+If you'd prefer to retry connecting automatically instead of
+raising an exception, pass retry=true to run_until_complete()
+or run_forever()
+
+""", file=sys.stderr)
+                    done = True
+                    raise
 
 
-def run_until_complete(coro: typing.Callable[[Connection], typing.Coroutine[typing.Any, typing.Any, None]]) -> None:
+def run_until_complete(coro: typing.Callable[[Connection], typing.Coroutine[typing.Any, typing.Any, None]], retry=False, debug=False) -> None:
     """Convenience method to run an async function taking an :class:`~iterm2.Connection` as an argument.
 
     After `coro` returns this function will return.
 
-    :param coro: The coroutine to run. Must be an `async def` function. It should take one argument, a :class:`~iterm2.connection.Connection`, and does not need to return a value."""
-    Connection().run_until_complete(coro)
+    :param coro: The coroutine to run. Must be an `async def` function. It should take one argument, a :class:`~iterm2.connection.Connection`, and does not need to return a value.
+    :param retry: Keep trying to connect until it succeeds?
+    """
+    Connection().run_until_complete(coro, retry, debug)
 
-def run_forever(coro: typing.Callable[[Connection], typing.Coroutine[typing.Any, typing.Any, None]]) -> None:
+def run_forever(coro: typing.Callable[[Connection], typing.Coroutine[typing.Any, typing.Any, None]], retry=False, debug=False) -> None:
     """Convenience method to run an async function taking an :class:`~iterm2.Connection` as an argument.
 
     This function never returns.
 
     :param coro: The coroutine to run. Must be an `async def` function. It should take one argument, a :class:`~iterm2.connection.Connection`, and does not need to return a value.
+    :param retry: Keep trying to connect until it succeeds?
     """
-    Connection().run_forever(coro)
+    Connection().run_forever(coro, retry, debug)

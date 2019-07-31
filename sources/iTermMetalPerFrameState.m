@@ -40,7 +40,7 @@ extern int CGContextGetFontSmoothingStyle(CGContextRef);
 
 typedef struct {
     unsigned int isMatch : 1;
-    unsigned int inUnderlinedRange : 1;
+    unsigned int inUnderlinedRange : 1;  // This is the underline for semantic history
     unsigned int selected : 1;
     unsigned int foregroundColor : 8;
     unsigned int fgGreen : 8;
@@ -93,7 +93,7 @@ typedef struct {
     NSInteger _numberOfScrollbackLines;
     long long _firstVisibleAbsoluteLineNumber;
     long long _lastVisibleAbsoluteLineNumber;
-    NSSize _containerSize;
+    NSRect _containerRect;
     NSRect _relativeFrame;
 
     // Badge
@@ -184,7 +184,7 @@ typedef struct {
     _firstVisibleAbsoluteLineNumber = _visibleRange.start.y + totalScrollbackOverflow;
     _lastVisibleAbsoluteLineNumber = _visibleRange.end.y + totalScrollbackOverflow;
     _relativeFrame = textView.delegate.textViewRelativeFrame;
-    _containerSize = textView.delegate.textViewContainerSize;
+    _containerRect = textView.delegate.textViewContainerRect;
 }
 
 - (void)loadLinesWithDrawingHelper:(iTermTextDrawingHelper *)drawingHelper
@@ -491,7 +491,8 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
             c.backgroundColorMode = ColorModeAlternate;
 
             c.underline = YES;
-
+            c.strikethrough = NO;
+            
             if (i + 1 < len &&
                 coord.x == gridWidth -1 &&
                 buf[i+1].code == DWC_RIGHT &&
@@ -750,6 +751,7 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
         attributes[x].annotation = annotated;
 
         const BOOL characterIsDrawable = iTermTextDrawingHelperIsCharacterDrawable(&line[x],
+                                                                                   x > 0 ? &line[x - 1] : NULL,
                                                                                    line[x].complexChar && (ScreenCharToStr(&line[x]) != nil),
                                                                                    _configuration->_blinkingItemsVisible,
                                                                                    _configuration->_blinkAllowed);
@@ -808,7 +810,10 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
         } else {
             attributes[x].underlineStyle = iTermMetalGlyphAttributesUnderlineNone;
         }
-
+        if (line[x].strikethrough) {
+            // This right here is why strikethrough and underline is mutually exclusive
+            attributes[x].underlineStyle |= iTermMetalGlyphAttributesUnderlineStrikethroughFlag;
+        }
         // Swap current and previous
         iTermTextColorKey *temp = currentColorKey;
         currentColorKey = previousColorKey;
@@ -832,6 +837,7 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
                 [imageRuns addObject:run];
             }
             glyphKeys[x].drawable = NO;
+            glyphKeys[x].combiningSuccessor = 0;
         } else if (annotated || characterIsDrawable) {
             lastDrawableGlyph = x;
             glyphKeys[x].code = line[x].code;
@@ -843,8 +849,18 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
             const int italicBit = line[x].italic ? (1 << 1) : 0;
             glyphKeys[x].typeface = (boldBit | italicBit);
             glyphKeys[x].drawable = YES;
+            if (x < width &&
+                line[x + 1].complexChar &&
+                !(!line[x].complexChar && line[x].code < 128) &&
+                ComplexCharCodeIsSpacingCombiningMark(line[x + 1].code)) {
+                // Next character is a combining spacing mark that will join with this non-ascii character.
+                glyphKeys[x].combiningSuccessor = line[x + 1].code;
+            } else {
+                glyphKeys[x].combiningSuccessor = 0;
+            }
         } else {
             glyphKeys[x].drawable = NO;
+            glyphKeys[x].combiningSuccessor = 0;
         }
 
         // This is my attempt at a fast sketch that estimates the number of unique combinations of
@@ -1085,23 +1101,34 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
     const BOOL isAscii = !glyphKey->isComplex && (glyphKey->code < 128);
 
     const int radius = iTermTextureMapMaxCharacterParts / 2;
-    iTermCharacterSourceDescriptor *descriptor = [iTermCharacterSourceDescriptor characterSourceDescriptorWithAsciiFont:_configuration->_asciiFont
-                                                                                                           nonAsciiFont:_configuration->_nonAsciiFont
-                                                                                                            asciiOffset:asciiOffset
-                                                                                                              glyphSize:size
-                                                                                                               cellSize:_configuration->_cellSize
-                                                                                                 cellSizeWithoutSpacing:_configuration->_cellSizeWithoutSpacing
-                                                                                                                  scale:scale
-                                                                                                            useBoldFont:_configuration->_useBoldFont
-                                                                                                          useItalicFont:_configuration->_useItalicFont
-                                                                                                       usesNonAsciiFont:_configuration->_useNonAsciiFont
-                                                                                                       asciiAntiAliased:_configuration->_asciiAntialias
-                                                                                                    nonAsciiAntiAliased:_configuration->_nonasciiAntialias];
-    iTermCharacterSourceAttributes *attributes = [iTermCharacterSourceAttributes characterSourceAttributesWithThinStrokes:glyphKey->thinStrokes
-                                                                                                                 bold:bold
-                                                                                                                   italic:italic];
+    iTermCharacterSourceDescriptor *descriptor =
+    [iTermCharacterSourceDescriptor characterSourceDescriptorWithAsciiFont:_configuration->_asciiFont
+                                                              nonAsciiFont:_configuration->_nonAsciiFont
+                                                               asciiOffset:asciiOffset
+                                                                 glyphSize:size
+                                                                  cellSize:_configuration->_cellSize
+                                                    cellSizeWithoutSpacing:_configuration->_cellSizeWithoutSpacing
+                                                                     scale:scale
+                                                               useBoldFont:_configuration->_useBoldFont
+                                                             useItalicFont:_configuration->_useItalicFont
+                                                          usesNonAsciiFont:_configuration->_useNonAsciiFont
+                                                          asciiAntiAliased:_configuration->_asciiAntialias
+                                                       nonAsciiAntiAliased:_configuration->_nonasciiAntialias];
+    iTermCharacterSourceAttributes *attributes =
+    [iTermCharacterSourceAttributes characterSourceAttributesWithThinStrokes:glyphKey->thinStrokes
+                                                                        bold:bold
+                                                                      italic:italic];
+    NSString *string = CharToStr(glyphKey->code, glyphKey->isComplex);
+    if (glyphKey->combiningSuccessor) {
+        if (ComplexCharCodeIsSpacingCombiningMark(glyphKey->combiningSuccessor) &&
+            !(glyphKey->isComplex && ComplexCharCodeIsSpacingCombiningMark(glyphKey->code))) {
+            // Append the successor cell's spacing combining mark, provided it has a predecessor.
+            NSString *successorString = CharToStr(glyphKey->combiningSuccessor, YES);
+            string = [string stringByAppendingString:successorString];
+        }
+    }
     iTermCharacterSource *characterSource =
-    [[iTermCharacterSource alloc] initWithCharacter:CharToStr(glyphKey->code, glyphKey->isComplex)
+    [[iTermCharacterSource alloc] initWithCharacter:string
                                          descriptor:descriptor
                                          attributes:attributes
                                          boxDrawing:glyphKey->boxDrawing
@@ -1127,9 +1154,11 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
 }
 
 - (void)metalGetUnderlineDescriptorsForASCII:(out iTermMetalUnderlineDescriptor *)ascii
-                                    nonASCII:(out iTermMetalUnderlineDescriptor *)nonAscii {
+                                    nonASCII:(out iTermMetalUnderlineDescriptor *)nonAscii
+                               strikethrough:(out iTermMetalUnderlineDescriptor *)strikethrough {
     *ascii = _configuration->_asciiUnderlineDescriptor;
     *nonAscii = _configuration->_nonAsciiUnderlineDescriptor;
+    *strikethrough = _configuration->_strikethroughUnderlineDescriptor;
 }
 
 // Use 24-bit color to set the text and background color of a cell.
@@ -1173,8 +1202,8 @@ ambiguousIsDoubleWidth:(BOOL)ambiguousIsDoubleWidth
     return _rows[y]->_screenCharLine;
 }
 
-- (CGSize)containerSize {
-    return _containerSize;
+- (CGRect)containerRect {
+    return _containerRect;
 }
 
 - (CGRect)relativeFrame {

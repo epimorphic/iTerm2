@@ -7,6 +7,9 @@
 //
 
 #import "NSEvent+iTerm.h"
+
+#import "iTermAdvancedSettingsModel.h"
+
 #import <Carbon/Carbon.h>
 
 @implementation NSEvent (iTerm)
@@ -53,6 +56,28 @@
     NSEvent *fakeEvent = [NSEvent eventWithCGEvent:modifiedCGEvent];
     CFRelease(modifiedCGEvent);
     return fakeEvent;
+}
+
+- (NSEventModifierFlags)it_modifierFlags {
+    if (![iTermAdvancedSettingsModel workAroundNumericKeypadBug]) {
+        return self.modifierFlags;
+    }
+    
+    switch (self.type) {
+        case NSEventTypeKeyUp:
+        case NSEventTypeKeyDown:
+            break;
+        default:
+            return self.modifierFlags;
+    }
+
+    switch (self.keyCode) {
+        case kVK_ANSI_KeypadEquals:
+            return self.modifierFlags | NSEventModifierFlagNumericPad;
+            
+        default:
+            return self.modifierFlags;
+    }
 }
 
 @end

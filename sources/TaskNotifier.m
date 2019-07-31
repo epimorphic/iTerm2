@@ -168,7 +168,9 @@ void UnblockTaskNotifier(void) {
     if (FD_ISSET(fd, fdSet)) {
         PtyTaskDebugLog(@"run/processWrite: unlock");
         [tasksLock unlock];
+        [task retain];
         [task processWrite];
+        [task release];
         PtyTaskDebugLog(@"run/processWrite: lock");
         [tasksLock lock];
         if (tasksChanged) {
@@ -350,6 +352,9 @@ void UnblockTaskNotifier(void) {
         [tasksLock unlock];
 
         [[NSNotificationCenter defaultCenter] postNotificationName:kTaskNotifierDidSpin object:nil];
+
+        [autoreleasePool drain];
+        autoreleasePool = [[NSAutoreleasePool alloc] init];
 
         // Poll...
         if (select(highfd+1, &rfds, &wfds, &efds, NULL) <= 0) {

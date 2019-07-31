@@ -230,6 +230,7 @@ async def async_register_web_view_tool(connection,
 async def async_set_profile_property(connection, session_id, key, value, guids=None):
     """
     Sets a property of a session's profile.
+    TODO: Add async_set_profile_properties and deprecate this.
 
     :param connection: A connected iterm2.Connection.
     :param session_id: Session ID to modify or None. If None, guids must be set.
@@ -242,7 +243,8 @@ async def async_set_profile_property(connection, session_id, key, value, guids=N
     return await async_set_profile_property_json(connection, session_id, key, json.dumps(value), guids)
 
 async def async_set_profile_property_json(connection, session_id, key, json_value, guids=None):
-    """Like async_set_profile_property but takes a json-encoded value."""
+    """Like async_set_profile_property but takes a json-encoded value.
+    DEPRECATED. Prefer async_set_profile_properties_json."""
     request = _alloc_request()
     if session_id is None:
         request.set_profile_property_request.guid_list.guids.extend(guids);
@@ -250,6 +252,22 @@ async def async_set_profile_property_json(connection, session_id, key, json_valu
         request.set_profile_property_request.session = session_id
     request.set_profile_property_request.key = key
     request.set_profile_property_request.json_value = json_value
+    return await _async_call(connection, request)
+
+async def async_set_profile_properties_json(connection, session_id, assignments, guids=None):
+    """Like async_set_profile_properties but takes a json-encoded value."""
+    request = _alloc_request()
+    if session_id is None:
+        request.set_profile_property_request.guid_list.guids.extend(guids);
+    else:
+        request.set_profile_property_request.session = session_id
+    a = []
+    for assignment in assignments:
+        value = iterm2.api_pb2.SetProfilePropertyRequest.Assignment()
+        value.key = assignment[0]
+        value.json_value = assignment[1]
+        a.append(value)
+    request.set_profile_property_request.assignments.extend(a)
     return await _async_call(connection, request)
 
 async def async_get_profile(connection, session=None, keys=None):
@@ -338,7 +356,7 @@ async def async_activate(connection,
     request.activate_request.select_session = select_session
     return await _async_call(connection, request)
 
-async def async_variable(connection, session_id=None, sets=[], gets=[], tab_id=None):
+async def async_variable(connection, session_id=None, sets=[], gets=[], tab_id=None, window_id=None):
     """
     Gets or sets session variables.
 
@@ -349,6 +367,8 @@ async def async_variable(connection, session_id=None, sets=[], gets=[], tab_id=N
         request.variable_request.session_id = session_id
     elif tab_id:
         request.variable_request.tab_id = tab_id
+    elif window_id:
+        request.variable_request.window_id = window_id
     else:
         request.variable_request.app = True
 
@@ -595,11 +615,13 @@ async def async_close(connection, sessions=None, tabs=None, windows=None, force=
     return await _async_call(connection, request)
 
 
-async def async_invoke_function(connection, invocation, session_id=None, tab_id=None, window_id=None, timeout=-1):
+async def async_invoke_function(connection, invocation, session_id=None, tab_id=None, window_id=None, timeout=-1, receiver=None):
     request = _alloc_request()
     request.invoke_function_request.SetInParent()
     request.invoke_function_request.invocation = invocation
-    if session_id:
+    if receiver:
+        request.invoke_function_request.method.receiver = receiver
+    elif session_id:
         request.invoke_function_request.session.session_id = session_id
     elif tab_id:
         request.invoke_function_request.tab.tab_id = tab_id
@@ -609,6 +631,25 @@ async def async_invoke_function(connection, invocation, session_id=None, tab_id=
         request.invoke_function_request.app.SetInParent()
     request.invoke_function_request.timeout = timeout
     return await _async_call(connection, request)
+
+async def async_invoke_method(connection, receiver, invocation, timeout):
+    """Convenience wrapper around async_invoke_function for methods."""
+    assert(receiver)
+    response = await iterm2.rpc.async_invoke_function(
+            connection,
+            invocation,
+            receiver=receiver,
+            timeout=timeout)
+    which = response.invoke_function_response.WhichOneof('disposition')
+    if which == 'error':
+        if response.invoke_function_response.error.status == iterm2.api_pb2.InvokeFunctionResponse.Status.Value("TIMEOUT"):
+            raise iterm2.rpc.RPCException("Timeout")
+        else:
+            raise iterm2.rpc.RPCException("{}: {}".format(
+                iterm2.api_pb2.InvokeFunctionResponse.Status.Name(
+                    response.invoke_function_response.error.status),
+                response.invoke_function_response.error.error_reason))
+    return json.loads(response.invoke_function_response.success.json_result)
 
 ## Private --------------------------------------------------------------------
 

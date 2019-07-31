@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="14313.18" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none">
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="14490.70" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none">
     <dependencies>
         <deployment identifier="macosx"/>
-        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="14313.18"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="14490.70"/>
     </dependencies>
     <objects>
         <customObject id="-2" userLabel="File's Owner" customClass="NSApplication">
@@ -197,7 +197,7 @@
                             </menuItem>
                             <menuItem title="Close Terminal Window" keyEquivalent="W" identifier="Close Terminal Window" id="598">
                                 <connections>
-                                    <action selector="performClose:" target="-1" id="599"/>
+                                    <action selector="closeTerminalWindow:" target="-1" id="0gb-0b-Ecd"/>
                                 </connections>
                             </menuItem>
                             <menuItem title="Close All Panes in Tab" keyEquivalent="w" identifier="Close All Panes in Tab" id="635">
@@ -1036,8 +1036,8 @@ DQ
                                     <action selector="performMiniaturize:" target="-1" id="37"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Zoom" keyEquivalent="=" identifier="Zoom" id="882">
-                                <modifierMask key="keyEquivalentModifierMask" option="YES" command="YES"/>
+                            <menuItem title="Zoom" keyEquivalent="0" identifier="Zoom" id="882">
+                                <modifierMask key="keyEquivalentModifierMask" shift="YES" command="YES"/>
                                 <connections>
                                     <action selector="performZoom:" target="-1" id="883"/>
                                 </connections>

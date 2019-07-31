@@ -194,7 +194,7 @@
     [[NSGraphicsContext currentContext] setImageInterpolation:saved];
 }
 
-+ (void)drawPowerlineCode:(unichar)code cellSize:(NSSize)cellSize color:(NSColor *)color {
++ (void)drawPowerlineCode:(unichar)code cellSize:(NSSize)cellSize color:(CGColorRef)color {
     switch (code) {
         case 0xE0A0:
             [self drawPDFWithName:@"PowerlineVersionControlBranch" cellSize:cellSize stretch:NO color:color antialiased:YES];
@@ -235,12 +235,13 @@
 + (NSImage *)imageForPDFNamed:(NSString *)pdfName
                      cellSize:(NSSize)cellSize
                   antialiased:(BOOL)antialiased
-                        color:(NSColor *)color {
+                        color:(CGColorRef)colorRef {
     static iTermImageCache *cache;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [[iTermImageCache alloc] initWithByteLimit:1024 * 1024];
     });
+    NSColor *color = [NSColor colorWithCGColor:colorRef];
     NSImage *image = [cache imageWithName:pdfName size:cellSize color:color];
     if (image) {
         return image;
@@ -311,7 +312,7 @@
 + (void)drawPDFWithName:(NSString *)pdfName
                cellSize:(NSSize)cellSize
                 stretch:(BOOL)stretch
-                  color:(NSColor *)color
+                  color:(CGColorRef)color
             antialiased:(BOOL)antialiased {
    
     NSImage *image = [self imageForPDFNamed:pdfName
@@ -330,34 +331,47 @@
                    hints:nil];
 }
 
++ (BOOL)isPowerlineGlyph:(unichar)code {
+    switch (code) {
+        case 0xE0A0:  // Version control branch
+        case 0xE0A1:  // LN (line) symbol
+        case 0xE0A2:  // Closed padlock
+        case 0xE0B0:  // Rightward black arrowhead
+        case 0xE0B1:  // Rightwards arrowhead
+        case 0xE0B2:  // Leftwards black arrowhead
+        case 0xE0B3:  // Leftwards arrowhead
+            return YES;
+    }
+    return NO;
+}
+
 + (void)drawCodeInCurrentContext:(unichar)code
                         cellSize:(NSSize)cellSize
                            scale:(CGFloat)scale
                           offset:(CGPoint)offset
-                           color:(NSColor *)color
+                           color:(CGColorRef)colorRef
         useNativePowerlineGlyphs:(BOOL)useNativePowerlineGlyphs {
-    if (useNativePowerlineGlyphs) {
-        switch (code) {
-            case 0xE0A0:  // Version control branch
-            case 0xE0A1:  // LN (line) symbol
-            case 0xE0A2:  // Closed padlock
-            case 0xE0B0:  // Rightward black arrowhead
-            case 0xE0B1:  // Rightwards arrowhead
-            case 0xE0B2:  // Leftwards black arrowhead
-            case 0xE0B3:  // Leftwards arrowhead
-                [self drawPowerlineCode:code
-                               cellSize:cellSize
-                                  color:color];
-                return;
-        }
+    if (useNativePowerlineGlyphs && [self isPowerlineGlyph:code]) {
+        [self drawPowerlineCode:code
+                       cellSize:cellSize
+                          color:colorRef];
+        return;
     }
-    
+    if (code == iTermFullBlock) {
+        // Fast path
+        CGContextRef context = [[NSGraphicsContext currentContext] CGContext];
+        CGContextSetFillColorWithColor(context, colorRef);
+        CGContextFillRect(context, CGRectMake(0, 0, cellSize.width, cellSize.height));
+        return;
+    }
     BOOL solid = NO;
     NSArray<NSBezierPath *> *paths = [iTermBoxDrawingBezierCurveFactory bezierPathsForBoxDrawingCode:code
                                                                                             cellSize:cellSize
                                                                                                scale:scale
                                                                                               offset:offset
                                                                                                solid:&solid];
+    NSColor *color = [NSColor colorWithCGColor:colorRef];
+    [color set];
     for (NSBezierPath *path in paths) {
         if (solid) {
             [path fill];

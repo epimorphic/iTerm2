@@ -85,8 +85,7 @@ typedef enum {
 #define REPORT_POSITION      "\033[%d;%dR"
 #define REPORT_POSITION_Q    "\033[?%d;%dR"
 #define REPORT_STATUS        "\033[0n"
-// Device Attribute : VT100 with Advanced Video Option
-#define REPORT_WHATAREYOU    "\033[?1;2c"
+
 // Secondary Device Attribute: VT100
 
 // TODO: When xterm compatibility is reached, change 95 to 314 or later. Even 277 would be an
@@ -554,10 +553,19 @@ typedef enum {
                           length:STATIC_STRLEN(REPORT_STATUS)];
 }
 
-- (NSData *)reportDeviceAttribute
-{
-    return [NSData dataWithBytes:REPORT_WHATAREYOU
-                          length:STATIC_STRLEN(REPORT_WHATAREYOU)];
+- (NSData *)reportDeviceAttribute {
+    // VT220 + sixel
+    // For a very long time we returned 1;2, like most other terms, but we need to advertise sixel
+    // support. Let's see what happens! New in version 3.3.0.
+    //
+    // Update: Per issue 7803, VT200 must accept 8-bit CSI. Allow users to elect VT100 reporting by
+    // setting $TERM to VT100.
+    switch (_vtLevel) {
+        case VT100EmulationLevel100:
+            return [@"\033[?1;2c" dataUsingEncoding:NSUTF8StringEncoding];
+        case VT100EmulationLevel200:
+            return [@"\033[?62;4c" dataUsingEncoding:NSUTF8StringEncoding];
+    }
 }
 
 - (NSData *)reportSecondaryDeviceAttribute

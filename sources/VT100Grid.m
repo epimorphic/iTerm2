@@ -58,6 +58,7 @@ static NSString *const kGridSizeKey = @"Size";
         [self setSize:size];
         scrollRegionRows_ = VT100GridRangeMake(0, size_.height);
         scrollRegionCols_ = VT100GridRangeMake(0, size_.width);
+        _preferredCursorPosition = VT100GridCoordMake(-1, -1);
     }
     return self;
 }
@@ -1316,7 +1317,7 @@ static NSString *const kGridSizeKey = @"Size";
                             adjustedLength);
 }
 
-- (void)restoreScreenFromLineBuffer:(LineBuffer *)lineBuffer
+- (BOOL)restoreScreenFromLineBuffer:(LineBuffer *)lineBuffer
                     withDefaultChar:(screen_char_t)defaultChar
                   maxLinesToRestore:(int)maxLines {
     // Move scrollback lines into screen
@@ -1381,6 +1382,7 @@ static NSString *const kGridSizeKey = @"Size";
         }
         --destLineNumber;
     }
+    return foundCursor;
 }
 
 
@@ -1652,6 +1654,17 @@ static NSString *const kGridSizeKey = @"Size";
     }
 }
 
+- (void)restorePreferredCursorPositionIfPossible {
+    if (_preferredCursorPosition.x >= 0 &&
+        _preferredCursorPosition.y >= 0 &&
+        _preferredCursorPosition.x <= size_.width &&
+        _preferredCursorPosition.y < size_.height) {
+        DLog(@"Restore preferred cursor position to %@", VT100GridCoordDescription(_preferredCursorPosition));
+        self.cursor = _preferredCursorPosition;
+        _preferredCursorPosition = VT100GridCoordMake(-1, -1);
+    }
+}
+
 #pragma mark - Private
 
 - (NSMutableArray *)linesWithSize:(VT100GridSize)size {
@@ -1682,6 +1695,7 @@ static NSString *const kGridSizeKey = @"Size";
     CopyBackgroundColor(&c, bg);
 
     c.underline = NO;
+    c.strikethrough = NO;
     c.urlCode = 0;
     c.image = 0;
 
@@ -1884,29 +1898,6 @@ static NSString *const kGridSizeKey = @"Size";
     }
 
     return VT100GridCoordMake(cx, cy);
-}
-
-// Add a combining char to the cell at the cursor position if possible. Returns
-// YES if it is able to and NO if there is no base character to combine with.
-- (BOOL)addCombiningChar:(unichar)combiningChar toCoord:(VT100GridCoord)coord
-{
-    int cx = coord.x;
-    int cy = coord.y;
-    screen_char_t* theLine = [self screenCharsAtLineNumber:cy];
-    if (theLine[cx].code == 0 ||
-        (theLine[cx].code >= ITERM2_PRIVATE_BEGIN && theLine[cx].code <= ITERM2_PRIVATE_END) ||
-        (IsLowSurrogate(combiningChar) && !IsHighSurrogate(theLine[cx].code)) ||
-        (!IsLowSurrogate(combiningChar) && IsHighSurrogate(theLine[cx].code))) {
-        // Unable to combine.
-        return NO;
-    }
-    if (theLine[cx].complexChar) {
-        theLine[cx].code = AppendToComplexChar(theLine[cx].code,
-                                               combiningChar);
-    } else {
-        BeginComplexChar(theLine + cx, combiningChar, [delegate_ gridUnicodeNormalizationForm]);
-    }
-    return YES;
 }
 
 - (NSString *)stringForCharacterAt:(VT100GridCoord)coord {

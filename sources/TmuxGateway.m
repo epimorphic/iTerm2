@@ -175,7 +175,7 @@ static NSString *kCommandIsLastInList = @"lastInList";
 
     NSData *decodedData = [self decodeEscapedOutput:space + 1];
 
-    TmuxLog(@"Run tmux command: \"%%output %%%d %.*s", windowPane, (int)[decodedData length], [decodedData bytes]);
+    TmuxLog(@"Run tmux command: \"%%output \"%%%d\" %.*s", windowPane, (int)[decodedData length], [decodedData bytes]);
     [[[delegate_ tmuxController] sessionForWindowPane:windowPane] tmuxReadTask:decodedData];
 
     return;
@@ -231,8 +231,10 @@ error:
         [self abortWithErrorMessage:[NSString stringWithFormat:@"Malformed command (expected %%window-renamed id new_name): \"%@\"", command]];
         return;
     }
+    NSString *escaped = components[2];
+    NSString *name = [escaped it_unescapedTmuxWindowName];
     [delegate_ tmuxWindowRenamedWithId:[[components objectAtIndex:1] intValue]
-                                    to:[components objectAtIndex:2]];
+                                    to:name];
 }
 
 - (void)parseSessionRenamedCommand:(NSString *)command
@@ -610,7 +612,7 @@ error:
 
 - (NSDictionary *)dictionaryForSendKeysCommandWithCodePoints:(NSArray<NSNumber *> *)codePoints
                                                   windowPane:(int)windowPane {
-    NSString *command = [NSString stringWithFormat:@"send-keys -t %%%d %@",
+    NSString *command = [NSString stringWithFormat:@"send-keys -t \"%%%d\" %@",
                          windowPane, [codePoints numbersAsHexStrings]];
     NSDictionary *dict = [self dictionaryForCommand:command
                                      responseTarget:self

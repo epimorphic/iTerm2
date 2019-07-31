@@ -12,6 +12,8 @@
 #import "iTermInitialDirectory.h"
 #import "iTermNotificationCenter.h"
 #import "iTermPreferences.h"
+#import "iTermVariableScope.h"
+#import "iTermVariableScope+Global.h"
 #import "TmuxSessionsTable.h"
 #import "TmuxController.h"
 #import "TSVParser.h"
@@ -232,7 +234,8 @@
     if (lastName) {
         TmuxController *tmuxController = self.tmuxController;
         [tmuxController newWindowInSession:[sessionsTable_ selectedSessionName]
-                          initialDirectory:[iTermInitialDirectory initialDirectoryFromProfile:tmuxController.profile
+                                     scope:[iTermVariableScope globalsScope]
+                          initialDirectory:[iTermInitialDirectory initialDirectoryFromProfile:tmuxController.sharedProfile
                                                                                    objectType:iTermWindowObject]];
     }
 }
@@ -243,12 +246,14 @@
         for (NSNumber *wid in windowIds) {
             [[self tmuxController] openWindowWithId:[wid intValue]
                                          affinities:windowIds
-										intentional:YES];
+                                        intentional:YES
+                                            profile:self.tmuxController.sharedProfile];
         }
     } else {
         for (NSNumber *wid in windowIds) {
             [[self tmuxController] openWindowWithId:[wid intValue]
-										intentional:YES];
+                                        intentional:YES
+                                            profile:self.tmuxController.sharedProfile];
         }
     }
 	[[self tmuxController] saveHiddenWindows];

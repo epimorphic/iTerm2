@@ -9,9 +9,11 @@
 
 #import "DebugLogging.h"
 #import "NSDictionary+iTerm.h"
+#import "NSEvent+iTerm.h"
 #import "NSImageView+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSTimer+iTerm.h"
+#import "NSView+iTerm.h"
 
 const CGFloat iTermStatusBarViewControllerIconWidth = 17;
 
@@ -44,8 +46,6 @@ NS_ASSUME_NONNULL_BEGIN
             [_iconImageView it_setTintColor:[NSColor labelColor]];
             [_iconImageView sizeToFit];
             [self addSubview:_iconImageView];
-            _iconImageView.layer.borderWidth =1;
-            _iconImageView.layer.borderColor = [[NSColor blackColor] CGColor];
             NSRect area = NSMakeRect(0, 0, iTermStatusBarViewControllerIconWidth, 21);
             NSRect frame;
             frame.size = NSMakeSize(icon.size.width, icon.size.height);
@@ -73,14 +73,16 @@ NS_ASSUME_NONNULL_BEGIN
     [_timer invalidate];
 }
 
-- (void)clickRecognized:(id)sender {
-    [_component statusBarComponentDidClickWithView:_view];
+- (CGFloat)minimumWidthIncludingIcon {
+    if (self.component.statusBarComponentIcon) {
+        return self.component.statusBarComponentMinimumWidth + iTermStatusBarViewControllerIconWidth + iTermStatusBarViewControllerMargin;
+    } else {
+        return self.component.statusBarComponentMinimumWidth + iTermStatusBarViewControllerMargin;
+    }
 }
 
-- (void)mouseDown:(NSEvent *)event {
-    if ([_component statusBarComponentHandlesClicks]) {
-        [_component statusBarComponentMouseDownWithView:_view];
-    }
+- (void)clickRecognized:(id)sender {
+    [_component statusBarComponentDidClickWithView:_view];
 }
 
 - (CGFloat)minX {
@@ -136,10 +138,10 @@ NS_ASSUME_NONNULL_BEGIN
     const CGFloat myHeight = self.frame.size.height;
     const CGFloat viewWidth = _view.frame.size.width;
     DLog(@"set frame of view %@ for component %@ width to %@", _view, self.component, @(viewWidth));
-    _view.frame = NSMakeRect(self.minX,
-                             (myHeight - viewHeight) / 2 + _component.statusBarComponentVerticalOffset,
-                             self.preferredWidthForComponentView,
-                             viewHeight);
+    _view.frame = NSMakeRect([self retinaRound:self.minX],
+                             [self retinaRound:(myHeight - viewHeight) / 2 + _component.statusBarComponentVerticalOffset],
+                             [self retinaRoundUp:self.preferredWidthForComponentView],
+                             [self retinaRoundUp:viewHeight]);
 }
 
 - (void)viewDidMoveToWindow {
@@ -155,7 +157,7 @@ NS_ASSUME_NONNULL_BEGIN
         }
         if (event.type == NSEventTypeLeftMouseUp ||
             event.type == NSEventTypeLeftMouseDown) {
-            if (event.modifierFlags & NSEventModifierFlagControl) {
+            if (event.it_modifierFlags & NSEventModifierFlagControl) {
                 return self;
             }
         }
@@ -164,7 +166,7 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (void)mouseUp:(NSEvent *)event {
-    if (event.clickCount != 1 || !(event.modifierFlags & NSEventModifierFlagControl)) {
+    if (event.clickCount != 1 || !(event.it_modifierFlags & NSEventModifierFlagControl)) {
         [super mouseUp:event];
         return;
     }

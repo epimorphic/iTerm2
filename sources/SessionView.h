@@ -91,6 +91,7 @@ extern NSString *const SessionViewWasSelectedForInspectionNotification;
 
 // Is this session's text view the first responder?
 - (BOOL)sessionViewTerminalIsFirstResponder;
+- (BOOL)sessionViewShouldDimOnlyText;
 - (NSColor *)sessionViewBackgroundColor;
 
 // Gives the tab color for this session.
@@ -215,6 +216,9 @@ typedef NS_ENUM(NSUInteger, iTermSessionViewFindDriver) {
 
 // The frame excluding the per-pane titlebar.
 - (NSRect)contentRect;
+
+// Insets the rect by the titlebar and status bar if they are present.
+- (NSRect)insetRect:(NSRect)rect flipped:(BOOL)flipped includeBottomStatusBar:(BOOL)includeBottomStatusBar;
 
 - (void)addAnnouncement:(iTermAnnouncementViewController *)announcement;
 

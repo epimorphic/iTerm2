@@ -26,6 +26,7 @@
 #import "iTermTimestampDrawHelper.h"
 #import "MovingAverage.h"
 #import "NSArray+iTerm.h"
+#import "NSCharacterSet+iTerm.h"
 #import "NSColor+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSImage+iTerm.h"
@@ -72,6 +73,7 @@ typedef struct {
     BOOL fakeBold;
     BOOL fakeItalic;
     BOOL underline;
+    BOOL strikethrough;
     BOOL isURL;
     NSInteger ligatureLevel;
     BOOL drawable;
@@ -1111,7 +1113,7 @@ typedef struct iTermTextColorContext {
                             positions:(CTVector(CGFloat) *)positions
                             inContext:(CGContextRef)ctx
                       backgroundColor:(NSColor *)backgroundColor {
-    NSPoint point = initialPoint;
+    const NSPoint point = initialPoint;
     VT100GridCoord origin = initialOrigin;
     NSInteger start = 0;
     for (id<iTermAttributedString> singlePartAttributedString in attributedStrings) {
@@ -1130,6 +1132,7 @@ typedef struct iTermTextColorContext {
             offsetPoint.y -= round((_cellSize.height - _cellSizeWithoutSpacing.height) / 2.0);
             numCellsDrawn = [self drawFastPathString:(iTermCheapAttributedString *)singlePartAttributedString
                                              atPoint:offsetPoint
+                                     unadjustedPoint:point
                                               origin:origin
                                            positions:subpositions
                                            inContext:ctx
@@ -1153,8 +1156,7 @@ typedef struct iTermTextColorContext {
     [transform translateXBy:pos.x yBy:pos.y];
     [transform concat];
 
-    NSColor *color = [NSColor colorWithCGColor:(CGColorRef)attributes[(NSString *)kCTForegroundColorAttributeName]];
-    [color set];
+    CGColorRef color = (CGColorRef)attributes[(NSString *)kCTForegroundColorAttributeName];
     [iTermBoxDrawingBezierCurveFactory drawCodeInCurrentContext:theCharacter
                                                        cellSize:_cellSize
                                                           scale:1
@@ -1222,34 +1224,54 @@ typedef struct iTermTextColorContext {
 
 // Just like drawTextOnlyAttributedString but 2-3x faster. Uses
 // CGContextShowGlyphsAtPositions instead of CTFontDrawGlyphs.
+// NOTE: point is adjusted when vertical spacing is not 100% to vertically center the text box.
+// unadjustedPoint gives the bottom of the line.
 - (int)drawFastPathString:(iTermCheapAttributedString *)cheapString
                   atPoint:(NSPoint)point
+          unadjustedPoint:(NSPoint)unadjustedPoint
                    origin:(VT100GridCoord)origin
                 positions:(CGFloat *)positions
                 inContext:(CGContextRef)ctx
           backgroundColor:(NSColor *)backgroundColor {
-    int result = [self drawFastPathStringWithoutUnderline:cheapString
-                                                  atPoint:point
-                                                   origin:origin
-                                                positions:positions
-                                                inContext:ctx
-                                          backgroundColor:backgroundColor
-                                             forUnderline:NO];
-
-    [self drawUnderlineForFastPathString:cheapString
-                                 atPoint:point
-                               positions:positions
-                         backgroundColor:backgroundColor];
+    if ([cheapString.attributes[iTermIsBoxDrawingAttribute] boolValue]) {
+        // Special box-drawing cells don't use the font so they look prettier.
+        unichar *chars = (unichar *)cheapString.characters;
+        for (NSUInteger i = 0; i < cheapString.length; i++) {
+            unichar c = chars[i];
+            NSPoint p = NSMakePoint(unadjustedPoint.x + positions[i], unadjustedPoint.y);
+            [self drawBoxDrawingCharacter:c
+                           withAttributes:cheapString.attributes
+                                       at:p];
+        }
+        return cheapString.length;
+    }
+    int result = [self drawFastPathStringWithoutUnderlineOrStrikethrough:cheapString
+                                                                 atPoint:point
+                                                                  origin:origin
+                                                               positions:positions
+                                                               inContext:ctx
+                                                         backgroundColor:backgroundColor
+                                                                   smear:NO];
+    [self drawUnderlineOrStrikethroughForFastPathString:cheapString
+                                          wantUnderline:YES
+                                                atPoint:point
+                                              positions:positions
+                                        backgroundColor:backgroundColor];
+    [self drawUnderlineOrStrikethroughForFastPathString:cheapString
+                                          wantUnderline:NO
+                                                atPoint:point
+                                              positions:positions
+                                        backgroundColor:backgroundColor];
     return result;
 }
 
-- (int)drawFastPathStringWithoutUnderline:(iTermCheapAttributedString *)cheapString
-                                  atPoint:(NSPoint)point
-                                   origin:(VT100GridCoord)origin
-                                positions:(CGFloat *)positions
-                                inContext:(CGContextRef)ctx
-                          backgroundColor:(NSColor *)backgroundColor
-                             forUnderline:(BOOL)smear {
+- (int)drawFastPathStringWithoutUnderlineOrStrikethrough:(iTermCheapAttributedString *)cheapString
+                                                 atPoint:(NSPoint)point
+                                                  origin:(VT100GridCoord)origin
+                                               positions:(CGFloat *)positions
+                                               inContext:(CGContextRef)ctx
+                                         backgroundColor:(NSColor *)backgroundColor
+                                                   smear:(BOOL)smear {
     if (cheapString.length == 0) {
         return 0;
     }
@@ -1281,13 +1303,13 @@ typedef struct iTermTextColorContext {
     if (!ok) {
         NSString *string = [NSString stringWithCharacters:cheapString.characters
                                                    length:cheapString.length];
-        [self drawTextOnlyAttributedStringWithoutUnderline:[NSAttributedString attributedStringWithString:string
-                                                                                               attributes:cheapString.attributes]
-                                                   atPoint:point
-                                                 positions:positions
-                                           backgroundColor:backgroundColor
-                                           graphicsContext:[NSGraphicsContext currentContext]
-                                                     smear:NO];
+        [self drawTextOnlyAttributedStringWithoutUnderlineOrStrikethrough:[NSAttributedString attributedStringWithString:string
+                                                                                                              attributes:cheapString.attributes]
+                                                                  atPoint:point
+                                                                positions:positions
+                                                          backgroundColor:backgroundColor
+                                                          graphicsContext:[NSGraphicsContext currentContext]
+                                                                    smear:NO];
         return cheapString.length;
     }
     CGColorRef const color = (CGColorRef)cheapString.attributes[(NSString *)kCTForegroundColorAttributeName];
@@ -1373,12 +1395,13 @@ typedef struct iTermTextColorContext {
     return length;
 }
 
-- (void)drawUnderlineForFastPathString:(iTermCheapAttributedString *)cheapString
-                               atPoint:(NSPoint)origin
-                             positions:(CGFloat *)stringPositions
-                       backgroundColor:(NSColor *)backgroundColor {
+- (void)drawUnderlineOrStrikethroughForFastPathString:(iTermCheapAttributedString *)cheapString
+                                        wantUnderline:(BOOL)wantUnderline
+                                              atPoint:(NSPoint)origin
+                                            positions:(CGFloat *)stringPositions
+                                      backgroundColor:(NSColor *)backgroundColor {
     NSDictionary *const attributes = cheapString.attributes;
-    NSNumber *value = attributes[NSUnderlineStyleAttributeName];
+    NSNumber *value = attributes[wantUnderline ? NSUnderlineStyleAttributeName : NSStrikethroughStyleAttributeName];
     NSUnderlineStyle underlineStyle = value.integerValue;
     if (underlineStyle == NSUnderlineStyleNone) {
         return;
@@ -1406,14 +1429,18 @@ typedef struct iTermTextColorContext {
         CGColorRef cgColor = (CGColorRef)attributes[(NSString *)kCTForegroundColorAttributeName];
         underlineColor = [NSColor colorWithCGColor:cgColor];
     }
-    [self drawUnderlinedTextWithContext:underlineContext
-                                 inRect:rect
-                         underlineColor:underlineColor
-                                  style:underlineStyle
-                                   font:attributes[NSFontAttributeName]
-                                  block:
+    [self drawUnderlinedOrStruckthroughTextWithContext:underlineContext
+                                         wantUnderline:wantUnderline
+                                                inRect:rect
+                                        underlineColor:underlineColor
+                                                 style:underlineStyle
+                                                  font:attributes[NSFontAttributeName]
+                                                 block:
      ^(CGContextRef ctx) {
          if (cheapString.length == 0) {
+             return;
+         }
+         if (!wantUnderline) {
              return;
          }
          NSMutableDictionary *attrs = [[cheapString.attributes mutableCopy] autorelease];
@@ -1424,13 +1451,13 @@ typedef struct iTermTextColorContext {
          attrs[(NSString *)kCTForegroundColorAttributeName] = (id)black;
 
          iTermCheapAttributedString *blackCopy = [[cheapString copyWithAttributes:attrs] autorelease];
-         [self drawFastPathStringWithoutUnderline:blackCopy
-                                          atPoint:NSMakePoint(-stringPositions[0], 0)
-                                           origin:VT100GridCoordMake(-1, -1)  // only needed by images
-                                        positions:stringPositions
-                                        inContext:[[NSGraphicsContext currentContext] graphicsPort]
-                                  backgroundColor:backgroundColor
-                                     forUnderline:YES];
+         [self drawFastPathStringWithoutUnderlineOrStrikethrough:blackCopy
+                                                         atPoint:NSMakePoint(-stringPositions[0], 0)
+                                                          origin:VT100GridCoordMake(-1, -1)  // only needed by images
+                                                       positions:stringPositions
+                                                       inContext:[[NSGraphicsContext currentContext] graphicsPort]
+                                                 backgroundColor:backgroundColor
+                                                           smear:YES];
          CFRelease(colorSpace);
          CFRelease(black);
      }];
@@ -1482,12 +1509,12 @@ typedef struct iTermTextColorContext {
     }
 }
 
-- (void)drawTextOnlyAttributedStringWithoutUnderline:(NSAttributedString *)attributedString
-                                             atPoint:(NSPoint)origin
-                                           positions:(CGFloat *)stringPositions
-                                     backgroundColor:(NSColor *)backgroundColor
-                                     graphicsContext:(NSGraphicsContext *)ctx
-                                               smear:(BOOL)smear {
+- (void)drawTextOnlyAttributedStringWithoutUnderlineOrStrikethrough:(NSAttributedString *)attributedString
+                                                            atPoint:(NSPoint)origin
+                                                          positions:(CGFloat *)stringPositions
+                                                    backgroundColor:(NSColor *)backgroundColor
+                                                    graphicsContext:(NSGraphicsContext *)ctx
+                                                              smear:(BOOL)smear {
     if (attributedString.length == 0) {
         return;
     }
@@ -1623,27 +1650,33 @@ typedef struct iTermTextColorContext {
                      backgroundColor:(NSColor *)backgroundColor {
     NSGraphicsContext *graphicsContext = [NSGraphicsContext currentContext];
 
-    [self drawTextOnlyAttributedStringWithoutUnderline:attributedString
-                                               atPoint:origin
-                                             positions:stringPositions
-                                       backgroundColor:backgroundColor
-                                       graphicsContext:graphicsContext
-                                                 smear:NO];
-    [self drawUnderlineForAttributedString:attributedString
-                                   atPoint:origin
-                                 positions:stringPositions];
+    [self drawTextOnlyAttributedStringWithoutUnderlineOrStrikethrough:attributedString
+                                                              atPoint:origin
+                                                            positions:stringPositions
+                                                      backgroundColor:backgroundColor
+                                                      graphicsContext:graphicsContext
+                                                                smear:NO];
+    [self drawUnderlineAndStrikethroughForAttributedString:attributedString
+                                                   atPoint:origin
+                                                 positions:stringPositions
+                                             wantUnderline:YES];
+    [self drawUnderlineAndStrikethroughForAttributedString:attributedString
+                                                   atPoint:origin
+                                                 positions:stringPositions
+                                             wantUnderline:NO];
 }
 
-- (void)drawUnderlineForAttributedString:(NSAttributedString *)attributedString
-                                 atPoint:(NSPoint)origin
-                               positions:(CGFloat *)stringPositions {
+- (void)drawUnderlineAndStrikethroughForAttributedString:(NSAttributedString *)attributedString
+                                                 atPoint:(NSPoint)origin
+                                               positions:(CGFloat *)stringPositions
+                                           wantUnderline:(BOOL)wantUnderline {
     iTermUnderlineContext storage = {
         .maskGraphicsContext = nil,
         .alphaMask = nil,
     };
     iTermUnderlineContext *underlineContext = &storage;
 
-    [attributedString enumerateAttribute:NSUnderlineStyleAttributeName
+    [attributedString enumerateAttribute:wantUnderline ? NSUnderlineStyleAttributeName : NSStrikethroughStyleAttributeName
                                  inRange:NSMakeRange(0, attributedString.length)
                                  options:0
                               usingBlock:
@@ -1669,13 +1702,22 @@ typedef struct iTermTextColorContext {
              CGColorRef cgColor = (CGColorRef)attributes[(NSString *)kCTForegroundColorAttributeName];
              underlineColor = [NSColor colorWithCGColor:cgColor];
          }
-         [self drawUnderlinedTextWithContext:underlineContext
-                                      inRect:rect
-                              underlineColor:underlineColor
-                                       style:underlineStyle
-                                        font:attributes[NSFontAttributeName]
-                                       block:
+         [self drawUnderlinedOrStruckthroughTextWithContext:underlineContext
+                                              wantUnderline:wantUnderline
+                                                     inRect:rect
+                                             underlineColor:underlineColor
+                                                      style:underlineStyle
+                                                       font:attributes[NSFontAttributeName]
+                                                      block:
           ^(CGContextRef ctx) {
+              if (!wantUnderline) {
+                  // This is a shortcut to prefer simplicity over speed.
+                  // Underline and strikethrough are very similar except for
+                  // masking. For strikethrough, we draw an empty mask. If this
+                  // becomes a performance issue, we can skip drawing the empty
+                  // mask.
+                  return;
+              }
               [self drawAttributedStringForMask:attributedString
                                          origin:NSMakePoint(-stringPositions[range.location], 0)
                                 stringPositions:stringPositions];
@@ -1690,12 +1732,13 @@ typedef struct iTermTextColorContext {
     }
 }
 
-- (void)drawUnderlinedTextWithContext:(iTermUnderlineContext *)underlineContext
-                               inRect:(NSRect)rect
-                       underlineColor:(NSColor *)underlineColor
-                                style:(NSUnderlineStyle)underlineStyle
-                                 font:(NSFont *)font
-                                block:(void (^)(CGContextRef))block {
+- (void)drawUnderlinedOrStruckthroughTextWithContext:(iTermUnderlineContext *)underlineContext
+                                       wantUnderline:(BOOL)wantUnderline
+                                              inRect:(NSRect)rect
+                                      underlineColor:(NSColor *)underlineColor
+                                               style:(NSUnderlineStyle)underlineStyle
+                                                font:(NSFont *)font
+                                               block:(void (^)(CGContextRef))block {
     if (!underlineContext->maskGraphicsContext) {
         // Create a mask image.
         [self initializeUnderlineContext:underlineContext
@@ -1709,10 +1752,11 @@ typedef struct iTermTextColorContext {
                  inRect:rect
               alphaMask:underlineContext->alphaMask
                   block:^{
-                      [self drawUnderlineOfColor:underlineColor
-                                           style:underlineStyle
-                                            font:font
-                                            rect:rect];
+                      [self drawUnderlineOrStrikethroughOfColor:underlineColor
+                                                  wantUnderline:wantUnderline
+                                                          style:underlineStyle
+                                                           font:font
+                                                           rect:rect];
                   }];
 }
 
@@ -1736,12 +1780,12 @@ typedef struct iTermTextColorContext {
     NSAttributedString *modifiedAttributedString = [self attributedString:attributedString
                                                bySettingForegroundColorTo:black];
 
-    [self drawTextOnlyAttributedStringWithoutUnderline:modifiedAttributedString
-                                               atPoint:origin
-                                             positions:stringPositions
-                                       backgroundColor:[NSColor colorWithSRGBRed:1 green:1 blue:1 alpha:1]
-                                       graphicsContext:[NSGraphicsContext currentContext]
-                                                 smear:YES];
+    [self drawTextOnlyAttributedStringWithoutUnderlineOrStrikethrough:modifiedAttributedString
+                                                              atPoint:origin
+                                                            positions:stringPositions
+                                                      backgroundColor:[NSColor colorWithSRGBRed:1 green:1 blue:1 alpha:1]
+                                                      graphicsContext:[NSGraphicsContext currentContext]
+                                                                smear:YES];
 }
 
 - (void)initializeUnderlineContext:(iTermUnderlineContext *)underlineContext
@@ -1931,6 +1975,7 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
                                           newAttributes->bold != previousAttributes->bold ||
                                           newAttributes->fakeItalic != previousAttributes->fakeItalic ||
                                           newAttributes->underline != previousAttributes->underline ||
+                                          newAttributes->strikethrough != previousAttributes->strikethrough ||
                                           newAttributes->isURL != previousAttributes->isURL ||
                                           newAttributes->drawable != previousAttributes->drawable);
         }
@@ -2014,6 +2059,7 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
         }
     }
     attributes->underline = (c->underline || inUnderlinedRange);
+    attributes->strikethrough = c->strikethrough;
     attributes->isURL = (c->urlCode != 0);
     attributes->drawable = drawable;
 }
@@ -2028,6 +2074,10 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
         }
     } else if (attributes->isURL) {
         underlineStyle = NSUnderlinePatternDash;
+    }
+    NSUnderlineStyle strikethroughStyle = NSUnderlineStyleNone;
+    if (attributes->strikethrough) {
+        strikethroughStyle = NSUnderlineStyleSingle;
     }
     static NSMutableParagraphStyle *paragraphStyle;
     static dispatch_once_t onceToken;
@@ -2046,6 +2096,7 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
               iTermBoldAttribute: @(attributes->bold),
               iTermFakeItalicAttribute: @(attributes->fakeItalic),
               NSUnderlineStyleAttributeName: @(underlineStyle),
+              NSStrikethroughStyleAttributeName: @(strikethroughStyle),
               NSParagraphStyleAttributeName: paragraphStyle };
 }
 
@@ -2133,24 +2184,45 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
     iTermCharacterAttributes previousCharacterAttributes = { 0 };
     int segmentLength = 0;
     BOOL previousDrawable = YES;
+    screen_char_t predecessor = { 0 };
 
     for (int i = indexRange.location; i < NSMaxRange(indexRange); i++) {
         iTermPreciseTimerStatsStartTimer(&_stats[TIMER_ATTRS_FOR_CHAR]);
         screen_char_t c = line[i];
-        unichar code = c.code;
+        const unichar code = c.code;
         BOOL isComplex = c.complexChar;
 
         NSString *charAsString;
+
         if (isComplex) {
-            charAsString = ComplexCharToStr(c.code);
+            charAsString = ComplexCharToStr(code);
+
+            if (i > indexRange.location &&
+                builder.length > 0 &&
+                !(!predecessor.complexChar && predecessor.code < 128) &&
+                ComplexCharCodeIsSpacingCombiningMark(code)) {
+                // Spacing combining marks get their own cell but get drawn together with their base
+                // character which is assumed to be in the preceding cell so they combine properly.
+                // This does not apply to ASCII characters, since they can never combine with a
+                // spacing combining mark. That's done for performance in the GPU renderer to avoid
+                // complicating its ASCII fastpath.
+                [builder appendString:charAsString];
+                const CGFloat lastValue = CTVectorGet(positions, CTVectorCount(positions) - 1);
+                for (int i = 0; i < charAsString.length; i++) {
+                    CTVectorAppend(positions, lastValue);
+                }
+                continue;
+            }
         } else {
             charAsString = nil;
         }
 
         const BOOL drawable = iTermTextDrawingHelperIsCharacterDrawable(&c,
+                                                                        i > indexRange.location ? &predecessor : NULL,
                                                                         charAsString != nil,
                                                                         _blinkingItemsVisible,
                                                                         _blinkAllowed);
+        predecessor = c;
         if (!drawable) {
             if ((characterAttributes.drawable && c.code == DWC_RIGHT && !c.complexChar) ||
                 (i > indexRange.location && !memcmp(&c, &line[i - 1], sizeof(c)))) {
@@ -2167,7 +2239,10 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
             [self character:&c isEquivalentToCharacter:&line[i-1]]) {
             ++segmentLength;
             iTermPreciseTimerStatsMeasureAndAccumulate(&_stats[TIMER_ATTRS_FOR_CHAR]);
-            if (drawable || ((characterAttributes.underline || characterAttributes.isURL) && segmentLength == 1)) {
+            if (drawable ||
+                ((characterAttributes.underline ||
+                  characterAttributes.strikethrough ||
+                  characterAttributes.isURL) && segmentLength == 1)) {
                 [self updateBuilder:builder
                          withString:drawable ? charAsString : @" "
                         orCharacter:code
@@ -2205,7 +2280,9 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
                      combinedAttributesChanged:&combinedAttributesChanged]) {
             iTermPreciseTimerStatsStartTimer(&_stats[TIMER_STAT_BUILD_MUTABLE_ATTRIBUTED_STRING]);
             id<iTermAttributedString> builtString = builder.attributedString;
-            if (previousCharacterAttributes.underline || previousCharacterAttributes.isURL) {
+            if (previousCharacterAttributes.underline ||
+                previousCharacterAttributes.strikethrough ||
+                previousCharacterAttributes.isURL) {
                 [builtString addAttribute:iTermUnderlineLengthAttribute
                                     value:@(segmentLength)];
             }
@@ -2234,24 +2311,25 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
         }
         iTermPreciseTimerStatsMeasureAndAccumulate(&_stats[TIMER_COMBINE_ATTRIBUTES]);
 
-        if (drawable || ((characterAttributes.underline || characterAttributes.isURL) && segmentLength == 1)) {
-            // Use " " when not drawable to prevent 0-length attributed strings when an underline is
-            // present. If we get here's because there's an underline (which isn't quite obvious
+        if (drawable || ((characterAttributes.underline ||
+                          characterAttributes.strikethrough ||
+                          characterAttributes.isURL) && segmentLength == 1)) {
+            // Use " " when not drawable to prevent 0-length attributed strings when an underline/strikethrough is
+            // present. If we get here's because there's an underline/strikethrough (which isn't quite obvious
             // from the if statement's condition).
             [self updateBuilder:builder
                      withString:drawable ? charAsString : @" "
                     orCharacter:code
                       positions:positions
                          offset:(i - indexRange.location) * _cellSize.width];
-            if (characterAttributes.boxDrawing) {
-                [builder disableFastPath];
-            }
         }
     }
     if (builder.length) {
         iTermPreciseTimerStatsStartTimer(&_stats[TIMER_STAT_BUILD_MUTABLE_ATTRIBUTED_STRING]);
         id<iTermAttributedString> builtString = builder.attributedString;
-        if (previousCharacterAttributes.underline || previousCharacterAttributes.isURL) {
+        if (previousCharacterAttributes.underline ||
+            previousCharacterAttributes.strikethrough ||
+            previousCharacterAttributes.isURL) {
             [builtString addAttribute:iTermUnderlineLengthAttribute
                                             value:@(segmentLength)];
         }
@@ -2315,6 +2393,7 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
     return [backgroundColor brightnessComponent] < PerceivedBrightness(components[0], components[1], components[2]);
 }
 
+// Larger values are lower
 - (CGFloat)yOriginForUnderlineForFont:(NSFont *)font yOffset:(CGFloat)yOffset cellHeight:(CGFloat)cellHeight {
     const CGFloat xHeight = font.xHeight;
     // Keep the underline a reasonable distance from the baseline.
@@ -2335,26 +2414,40 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
     return MIN(roundedPreferredOffset, maximumOffset);
 }
 
+// Larger values are lower
+- (CGFloat)yOriginForStrikethroughForFont:(NSFont *)font yOffset:(CGFloat)yOffset cellHeight:(CGFloat)cellHeight {
+    const CGFloat xHeight = font.xHeight;
+    // Keep the underline a reasonable distance from the baseline.
+    CGFloat underlineOffset = self.baselineOffset - xHeight / 2.0;
+    return [self retinaRound:yOffset + _cellSize.height + underlineOffset];
+}
+
 - (CGFloat)underlineThicknessForFont:(NSFont *)font {
     return MAX(0.5, [self retinaRound:font.underlineThickness]);
 }
 
-- (void)drawUnderlineOfColor:(NSColor *)color
-                       style:(NSUnderlineStyle)underlineStyle
-                        font:(NSFont *)font
-                        rect:(NSRect)rect {
+- (CGFloat)strikethroughThicknessForFont:(NSFont *)font {
+    return [self underlineThicknessForFont:font];
+}
+
+- (void)drawUnderlineOrStrikethroughOfColor:(NSColor *)color
+                              wantUnderline:(BOOL)wantUnderline
+                                      style:(NSUnderlineStyle)underlineStyle
+                                       font:(NSFont *)font
+                                       rect:(NSRect)rect {
     [color set];
     NSBezierPath *path = [NSBezierPath bezierPath];
 
+    const CGFloat y = (wantUnderline ?
+                       [self yOriginForUnderlineForFont:font yOffset:rect.origin.y cellHeight:_cellSize.height] :
+                       [self yOriginForStrikethroughForFont:font yOffset:rect.origin.y cellHeight:_cellSize.height]);
     NSPoint origin = NSMakePoint(rect.origin.x,
-                                 [self yOriginForUnderlineForFont:font
-                                                          yOffset:rect.origin.y
-                                                       cellHeight:_cellSize.height]);
+                                 y);
     origin.y += self.isRetina ? 0.25 : 0.5;
     CGFloat dashPattern[] = { 4, 3 };
     CGFloat phase = fmod(rect.origin.x, dashPattern[0] + dashPattern[1]);
 
-    const CGFloat lineWidth = [self underlineThicknessForFont:font];
+    const CGFloat lineWidth = wantUnderline ? [self underlineThicknessForFont:font] : [self strikethroughThicknessForFont:font];
     switch (underlineStyle) {
         case NSUnderlineStyleSingle:
             [path moveToPoint:origin];
@@ -2534,10 +2627,11 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
                                      y - round((_cellSize.height - _cellSizeWithoutSpacing.height) / 2.0),
                                      charsInLine * _cellSize.width,
                                      _cellSize.height);
-            [self drawUnderlineOfColor:[self defaultTextColor]
-                                 style:NSUnderlineStyleSingle
-                                  font:fontInfo.font
-                                  rect:rect];
+            [self drawUnderlineOrStrikethroughOfColor:[self defaultTextColor]
+                                        wantUnderline:YES
+                                                style:NSUnderlineStyleSingle
+                                                 font:fontInfo.font
+                                                 rect:rect];
 
             // Save the cursor's cell coords
             if (i <= cursorIndex && i + charsInLine > cursorIndex) {
@@ -2666,6 +2760,26 @@ static BOOL iTermTextDrawingHelperShouldAntiAlias(screen_char_t *c,
     }
 
     _oldCursorPosition = _cursorCoord;
+}
+
+- (NSColor *)blockCursorFillColorRespectingSmartSelection {
+    if (_useSmartCursorColor) {
+        screen_char_t *theLine;
+        if (_cursorCoord.y >= 0) {
+            theLine = [self.delegate drawingHelperLineAtScreenIndex:_cursorCoord.y];
+        } else {
+            theLine = [self.delegate drawingHelperLineAtIndex:_cursorCoord.y + _numberOfScrollbackLines];
+        }
+        BOOL isDoubleWidth;
+        screen_char_t screenChar = [self charForCursorAtColumn:_cursorCoord.x
+                                                        inLine:theLine
+                                                   doubleWidth:&isDoubleWidth];
+        iTermSmartCursorColor *smartCursorColor = [[[iTermSmartCursorColor alloc] init] autorelease];
+        smartCursorColor.delegate = self;
+        return [smartCursorColor backgroundColorForCharacter:screenChar];
+    } else {
+        return self.backgroundColorForCursor;
+    }
 }
 
 - (NSRect)reallyDrawCursor:(iTermCursor *)cursor at:(VT100GridCoord)cursorCoord outline:(BOOL)outline {

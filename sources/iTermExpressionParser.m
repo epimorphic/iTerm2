@@ -8,6 +8,8 @@
 #import "iTermExpressionParser.h"
 #import "iTermExpressionParser+Private.h"
 
+#import "CPParser+Cache.h"
+#import "iTermAdvancedSettingsModel.h"
 #import "iTermGrammarProcessor.h"
 #import "iTermParsedExpression+Tests.h"
 #import "iTermScriptFunctionCall+Private.h"
@@ -25,7 +27,7 @@
 @implementation iTermExpressionParser {
     @protected
     CPTokeniser *_tokenizer;
-    CPParser *_parser;
+    CPSLRParser *_parser;
     iTermVariableScope *_scope;
     NSError *_error;
     NSString *_input;
@@ -39,6 +41,8 @@
     iTermParsedExpression *expression = [[iTermExpressionParser callParser] parse:invocation
                                                                             scope:permissiveScope];
     switch (expression.expressionType) {
+        case iTermParsedExpressionTypeArrayLookup:
+        case iTermParsedExpressionTypeVariableReference:
         case iTermParsedExpressionTypeNumber:
         case iTermParsedExpressionTypeString:
         case iTermParsedExpressionTypeArrayOfExpressions:
@@ -164,15 +168,15 @@
         _grammarProcessor = [[iTermGrammarProcessor alloc] init];
         [self loadRulesAndTransforms];
 
-        NSError *error = nil;
-        CPGrammar *grammar = [CPGrammar grammarWithStart:start
-                                          backusNaurForm:_grammarProcessor.backusNaurForm
-                                                   error:&error];
-        _parser = [CPSLRParser parserWithGrammar:grammar];
+        _parser = [CPSLRParser parserWithBNF:_grammarProcessor.backusNaurForm start:start];
         assert(_parser);
         _parser.delegate = self;
     }
     return self;
+}
+
+- (void)dealloc {
+    [_parser it_releaseParser];
 }
 
 - (void)addSwiftyStringRecognizers {
@@ -226,12 +230,17 @@
         return [[iTermParsedExpression alloc] initWithErrorCode:3 reason:errorReason];
     }
 
+    if ([value conformsToProtocol:@protocol(iTermExpressionParserPlaceholder)]) {
+        return [[iTermParsedExpression alloc] initWithPlaceholder:value
+                                                         optional:optional];
+    }
+
     // The fallbackError is used only when value is not legit.
     NSString *fallbackError;
     if (optional) {
         return [[iTermParsedExpression alloc] initWithOptionalObject:value];
     } else {
-        fallbackError = [NSString stringWithFormat:@"Reference to undefined variable “%@”. Use ? to convert undefined values to null.", path];
+        fallbackError = [NSString stringWithFormat:@"Reference to undefined variable “%@”. Change it to “%@?” to treat the undefined value as null.", path, path];
         return [[iTermParsedExpression alloc] initWithObject:value
                                                  errorReason:fallbackError];
     }
@@ -246,8 +255,7 @@
              arraySoFar.lastObject &&
              arraySoFar.lastObject.expressionType == iTermParsedExpressionTypeString) {
              NSString *concatenated = [arraySoFar.lastObject.string stringByAppendingString:expression.string];
-             iTermParsedExpression *combined = [[iTermParsedExpression alloc] initWithString:concatenated
-                                                                                    optional:NO];
+             iTermParsedExpression *combined = [[iTermParsedExpression alloc] initWithString:concatenated];
              return [[arraySoFar subarrayToIndex:arraySoFar.count - 1] arrayByAddingObject:combined];
          }
          return [arraySoFar arrayByAddingObject:expression];
@@ -261,19 +269,40 @@
 
 + (iTermParsedExpression *)parsedExpressionWithInterpolatedString:(NSString *)swifty
                                                             scope:(iTermVariableScope *)scope {
+    return [self parsedExpressionWithInterpolatedString:swifty escapingFunction:nil scope:scope];
+}
+
++ (iTermParsedExpression *)parsedExpressionWithInterpolatedString:(NSString *)swifty
+                                                 escapingFunction:(NSString *(^)(NSString *string))escapingFunction
+                                                            scope:(iTermVariableScope *)scope {
     __block NSError *error = nil;
     NSMutableArray *interpolatedParts = [NSMutableArray array];
     [swifty enumerateSwiftySubstrings:^(NSUInteger index, NSString *substring, BOOL isLiteral, BOOL *stop) {
         if (isLiteral) {
             NSString *escapedString = [substring it_stringByExpandingBackslashEscapedCharacters];
-            [interpolatedParts addObject:[[iTermParsedExpression alloc] initWithString:escapedString
-                                                                              optional:NO]];
+            [interpolatedParts addObject:[[iTermParsedExpression alloc] initWithString:escapedString]];
             return;
         }
 
         iTermExpressionParser *parser = [[iTermExpressionParser alloc] initWithStart:@"expression"];
         iTermParsedExpression *expression = [parser parse:substring
                                                     scope:scope];
+        if (expression.expressionType == iTermParsedExpressionTypeString && escapingFunction) {
+            NSString *escapedString = escapingFunction(expression.string);
+            [interpolatedParts addObject:[[iTermParsedExpression alloc] initWithString:escapedString]];
+            return;
+        }
+        if ([iTermAdvancedSettingsModel laxNilPolicyInInterpolatedStrings] &&
+            expression.expressionType == iTermParsedExpressionTypeError) {
+            // If the expression was a variable reference, replace it with empty string. This works
+            // around the annoyance of remembering to add question marks in interpolated strings,
+            // where you know the result you want is always an empty string.
+            iTermParsedExpression *expressionWithPlaceholders = [parser parse:substring
+                                                                        scope:[[iTermVariablePlaceholderScope alloc] init]];
+            if ([expressionWithPlaceholders.object conformsToProtocol:@protocol(iTermExpressionParserPlaceholder)]) {
+                expression = [[iTermParsedExpression alloc] initWithString:@""];
+            }
+        }
         [interpolatedParts addObject:expression];
         if (expression.expressionType == iTermParsedExpressionTypeError) {
             error = expression.error;
@@ -291,6 +320,20 @@
 
 - (iTermTriple<id, NSString *, NSString *> *)pathOrDereferencedArrayFromPath:(NSString *)path
                                                                        index:(NSNumber *)indexNumber {
+    if ([path isEqualToString:@"null"] && !indexNumber) {
+        return [iTermTriple tripleWithObject:nil andObject:nil object:path];
+    }
+    if (_scope.usePlaceholders) {
+        id placeholder;
+        if (indexNumber) {
+            placeholder = [[iTermExpressionParserArrayDereferencePlaceholder alloc] initWithPath:path index:indexNumber.integerValue];
+        } else {
+            placeholder = [[iTermExpressionParserVariableReferencePlaceholder alloc] initWithPath:path];
+        }
+        return [iTermTriple tripleWithObject:placeholder
+                                   andObject:nil
+                                      object:path];
+    }
     id untypedValue = [_scope valueForVariableName:path];
     if (!untypedValue) {
         return [iTermTriple tripleWithObject:nil andObject:nil object:path];
@@ -352,10 +395,11 @@
     [_grammarProcessor addProductionRule:@"expression ::= <path_or_dereferenced_array>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
                                iTermTriple *triple = syntaxTree.children[0];
+                               // Explicit nulls must be optional to signal the caller intended them to be null.
                                return [weakSelf parsedExpressionWithValue:triple.firstObject
                                                               errorReason:triple.secondObject
                                                                      path:triple.thirdObject
-                                                                 optional:NO];
+                                                                 optional:[triple.thirdObject isEqualToString:@"null"]];
                            }];
     [_grammarProcessor addProductionRule:@"expression ::= <path_or_dereferenced_array> '?'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {

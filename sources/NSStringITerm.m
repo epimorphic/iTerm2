@@ -926,6 +926,14 @@ int decode_utf8_char(const unsigned char *datap,
     }
 }
 
+- (NSString *)it_contentHash {
+    return [self dataUsingEncoding:NSUTF8StringEncoding].it_sha256.it_hexEncoded;
+}
+
+- (NSString *)it_unescapedTmuxWindowName {
+    return [self stringByReplacingOccurrencesOfString:@"\\\\" withString:@"\\"];
+}
+
 - (NSDate *)dateValueFromUTC {
     NSArray<NSString *> *formats = @[ @"E, d MMM yyyy HH:mm:ss zzz",
                                       @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
@@ -1382,88 +1390,6 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
     [parser enumerateSwiftySubstringsWithBlock:block];
 }
 
-- (NSString *)stringByReplacingVariableReferencesWithVariablesFromScope:(iTermVariableScope *)scope
-                                                nonVariableReplacements:(NSDictionary *)nonvars {
-    return [self replaceVariableReferencesWithBlock:^NSString *(NSString *name) {
-        if (nonvars[name]) {
-            return nonvars[name];
-        } else {
-            return [scope stringValueForVariableName:name];
-        }
-    }];
-}
-
-// Replace substrings like \(foo) or \1...\9 with the value of vars[@"foo"] or vars[@"1"].
-- (NSString *)stringByReplacingVariableReferencesWithVariables:(NSDictionary *)vars {
-    NSString *(^stringify)(id) = ^NSString *(id x) {
-        if ([NSString castFrom:x]) {
-            return x;
-        } else if ([NSNumber castFrom:x]) {
-            return [x stringValue];
-        } else {
-            return [NSJSONSerialization it_jsonStringForObject:x] ?: @"";
-        }
-    };
-    return [self replaceVariableReferencesWithBlock:^NSString *(NSString *name) {
-        return stringify(vars[name]);
-    }];
-}
-
-- (NSString *)replaceVariableReferencesWithBlock:(NSString *(^ NS_NOESCAPE)(NSString *name))block {
-    unichar *chars = (unichar *)malloc(self.length * sizeof(unichar));
-    [self getCharacters:chars];
-    enum {
-        kLiteral,
-        kEscaped,
-        kInParens
-    } state = kLiteral;
-    NSMutableString *result = [NSMutableString string];
-    NSMutableString *varName = nil;
-    for (int i = 0; i < self.length; i++) {
-        unichar c = chars[i];
-        switch (state) {
-            case kLiteral:
-                if (c == '\\') {
-                    state = kEscaped;
-                } else {
-                    [result appendFormat:@"%C", c];
-                }
-                break;
-
-            case kEscaped:
-                if (c == '(') {
-                    state = kInParens;
-                    varName = [NSMutableString string];
-                } else {
-                    // \1...\9 also work as subs.
-                    NSString *singleCharVar = [NSString stringWithFormat:@"%C", c];
-                    NSString *replacement = block(singleCharVar);
-                    if (singleCharVar.integerValue > 0 && replacement) {
-                        [result appendString:replacement];
-                    } else {
-                        [result appendFormat:@"\\%C", c];
-                    }
-                    state = kLiteral;
-                }
-                break;
-
-            case kInParens:
-                if (c == ')') {
-                    state = kLiteral;
-                    NSString *value = block(varName);
-                    if (value) {
-                        [result appendString:value];
-                    }
-                } else {
-                    [varName appendFormat:@"%C", c];
-                }
-                break;
-        }
-    }
-    free(chars);
-    return result;
-}
-
 - (NSString *)stringRepeatedTimes:(int)n {
     NSMutableString *result = [NSMutableString string];
     for (int i = 0; i < n; i++) {
@@ -1600,8 +1526,30 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
     static dispatch_once_t onceToken;
     static NSCharacterSet *exceptions;
     dispatch_once(&onceToken, ^{
-        // These characters are forced to be base characters.
-        exceptions = [[NSCharacterSet characterSetWithCharactersInString:@"\uff9e\uff9f"] retain];
+        // These characters are forced to be base characters. Apple's function
+        // is a bit overzealous in its definition of composed characters. For
+        // example, it treats 0b95 0bcd 0b95 0bc1 as a single composed
+        // character. In issue 7788 we see this violates user expectations;
+        // since b95 is a base character, it doesn't make sense. However Apple
+        // has decided to define grapheme cluster, it doesn't match what we
+        // actually want, which is to segment on base characters. It isn't as
+        // simple as simply splitting on base characters because combining
+        // marks can be picky about which preceding characters they'll combine
+        // with. For example, skin tone modifiers don't combine with all emoji. 
+        // Apple's function does pick those out properly, so we use it as a
+        // starting point and then segment further where we're sure it's safe
+        // to do so.
+        //
+        // Furthermore, (at least some) combining spacing marks behave better
+        // when they have their own cell. For example, U+0BC6 when combined with
+        // U+0B95. See issue 7788.
+        //
+        // This also came up in issue 6048 for FF9E and FF9F (HALFWIDTH KATAKANA VOICED SOUND MARK)
+        if ([iTermAdvancedSettingsModel aggressiveBaseCharacterDetection]) {
+            exceptions = [NSCharacterSet codePointsWithOwnCell];
+        } else {
+            exceptions = [[NSCharacterSet characterSetWithCharactersInString:@"\uff9e\uff9f"] retain];
+        }
     });
     CFIndex index = 0;
     NSInteger minimumLocation = 0;
@@ -1619,14 +1567,10 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
         }
         range = NSMakeRange(tempRange.location, tempRange.length);
         if (range.length > 0) {
-            // CFStringGetRangeOfComposedCharactersAtIndex thinks that U+FF9E and U+FF9F are
-            // combining marks. Terminal.app and the person in issue 6048 disagree. Prevent them
-            // from combining.
             NSRange rangeOfFirstException = [self rangeOfCharacterFromSet:exceptions
                                                                   options:NSLiteralSearch
-                                                                    range:range];
-            if (rangeOfFirstException.location != NSNotFound &&
-                rangeOfFirstException.location > range.location) {
+                                                                    range:NSMakeRange(range.location + 1, range.length - 1)];
+            if (rangeOfFirstException.location != NSNotFound) {
                 range.length = rangeOfFirstException.location - range.location;
                 minimumLocation = NSMaxRange(range);
             }
@@ -1976,7 +1920,7 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
         double divisor;
         NSString *format;
     } units[] = {
-        { 1,        1, @"%.04f bytes" }, // 0.9999 bytes
+        { 1,        1, @"%.0f bytes" }, // 0 bytes
         { k,        1, @"%.0f bytes" }, // 999 bytes
         { 10 * k,   k, @"%.1f kB" },  // 9.9 KB
         { mb,       k, @"%.0f kB" },  // 999 KB
@@ -2142,6 +2086,25 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
     } else {
         return [self stringByAppendingFormat:@".%@", component];
     }
+}
+
+- (NSArray<NSString *> *)it_normalizedTokens {
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+    [self enumerateSubstringsInRange:NSMakeRange(0, self.length)
+                             options:NSStringEnumerationByWords
+                          usingBlock:^(NSString * _Nullable substring, NSRange substringRange, NSRange enclosingRange, BOOL * _Nonnull stop) {
+                              [tokens addObject:[substring localizedLowercaseString]];
+                          }];
+    return tokens;
+}
+
+- (double)it_localizedDoubleValue {
+    NSScanner *scanner = [NSScanner localizedScannerWithString:self];
+    double d;
+    if (![scanner scanDouble:&d]) {
+        return 0;
+    }
+    return d;
 }
 
 @end

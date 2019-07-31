@@ -17,14 +17,18 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)titleForSessionName:(NSString *)sessionName
                       profileName:(NSString *)profileName
                               job:(NSString *)jobVariable
+                      commandLine:(NSString *)commandLineVariable
                               pwd:(NSString *)pwdVariable
                               tty:(NSString *)ttyVariable
                              user:(NSString *)userVariable
                              host:(NSString *)hostVariable
-                             tmux:(nullable NSString *)tmuxVariable
+                         tmuxPane:(nullable NSString *)tmuxPaneVariable
                          iconName:(NSString *)iconName
                        windowName:(NSString *)windowName
-                       components:(iTermTitleComponents)titleComponents;
+                   tmuxWindowName:(nullable NSString *)tmuxWindowName
+                  tmuxWindowTitle:(nullable NSString *)tmuxWindowTitle
+                       components:(iTermTitleComponents)titleComponents
+                    isWindowTitle:(BOOL)isWindowTitle;
 
 
 @end

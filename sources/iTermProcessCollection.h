@@ -11,6 +11,7 @@
 @interface iTermProcessInfo : NSObject
 
 @property(nonatomic, readonly, strong) NSString *name;
+@property(nonatomic, readonly, strong) NSString *commandLine;  // only set for foreground jobs
 @property(nonatomic, readonly) pid_t processID;
 @property(nonatomic, readonly) pid_t parentProcessID;
 @property(nonatomic, readonly) NSMutableArray<iTermProcessInfo *> *children;
@@ -24,7 +25,10 @@
 - (void)resolveAsynchronously;
 
 // This is to be used by tests
-- (void)privateSetIsForegroundJob;
+- (void)privateSetIsForegroundJob:(BOOL)value;
+
+- (NSArray<iTermProcessInfo *> *)descendantsSkippingLevels:(NSInteger)levels;
+
 @end
 
 @interface iTermProcessCollection : NSObject

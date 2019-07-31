@@ -28,6 +28,9 @@ const int kNumberOfSpacesPerTabCancel = -2;
 const int kNumberOfSpacesPerTabNoConversion = -1;
 const int kNumberOfSpacesPerTabOpenAdvancedPaste = -3;
 
+// Was 1024, but this seemed to cause a lot of problems. Let's try this.
+const NSInteger iTermQuickPasteBytesPerCallDefaultValue = 768;
+
 @interface iTermPasteHelper () <iTermPasteViewManagerDelegate>
 @end
 
@@ -228,7 +231,7 @@ const int kNumberOfSpacesPerTabOpenAdvancedPaste = -3;
         chunkKey = @"SlowPasteBytesPerCall";
         delayKey = @"SlowPasteDelayBetweenCalls";
     } else {
-        defaultChunkSize = 1024;
+        defaultChunkSize = iTermQuickPasteBytesPerCallDefaultValue;
         defaultDelay = 0.01;
         chunkKey = @"QuickPasteBytesPerCall";
         delayKey = @"QuickPasteDelayBetweenCalls";
@@ -352,7 +355,7 @@ const int kNumberOfSpacesPerTabOpenAdvancedPaste = -3;
     // thing? See bug 1031.
     [_buffer appendString:aString];
     [self pasteWithBytePerCallPrefKey:@"QuickPasteBytesPerCall"
-                         defaultValue:1024
+                         defaultValue:iTermQuickPasteBytesPerCallDefaultValue
              delayBetweenCallsPrefKey:@"QuickPasteDelayBetweenCalls"
                          defaultValue:0.01
                        blockAtNewline:NO
@@ -363,7 +366,7 @@ const int kNumberOfSpacesPerTabOpenAdvancedPaste = -3;
 - (NSInteger)normalChunkSize {
     NSNumber *n = [[NSUserDefaults standardUserDefaults] objectForKey:@"QuickPasteBytesPerCall"];
     if (!n) {
-        return 1024;
+        return iTermQuickPasteBytesPerCallDefaultValue;
     } else {
         return [n integerValue];
     }
@@ -525,6 +528,33 @@ const int kNumberOfSpacesPerTabOpenAdvancedPaste = -3;
 
 // This may modify pasteEvent.string.
 - (BOOL)maybeWarnAboutMultiLinePaste:(PasteEvent *)pasteEvent {
+    const int limit = [iTermAdvancedSettingsModel alwaysWarnBeforePastingOverSize];
+    if (limit >= 0) {
+        if (pasteEvent.string.length > limit) {
+            NSNumberFormatter *numberFormatter = [[[NSNumberFormatter alloc] init] autorelease];
+            numberFormatter.numberStyle = NSNumberFormatterDecimalStyle;
+            const iTermWarningSelection selection =
+            [iTermWarning showWarningWithTitle:[NSString stringWithFormat:@"OK to paste %@ characters?", [numberFormatter stringFromNumber:@(pasteEvent.string.length)]]
+                                       actions:@[ @"OK", @"Cancel", @"Advanced…" ]
+                                     accessory:nil
+                                    identifier:@"NoSyncPasteOverCharacterLimitWarning"
+                                   silenceable:kiTermWarningTypePersistent
+                                       heading:@"Paste Limit Exceeded"
+                                        window:self.delegate.pasteHelperViewForIndicator.window];
+            switch (selection) {
+                case kiTermWarningSelection0:
+                    break;
+                case kiTermWarningSelection1:
+                    return NO;
+                case kiTermWarningSelection2:
+                    [self showAdvancedPasteWithFlags:0];
+                    return NO;
+                default:
+                    break;
+            }
+        }
+    }
+
     NSCharacterSet *newlineCharacterSet =
         [NSCharacterSet characterSetWithCharactersInString:@"\r\n"];
     NSRange rangeOfFirstNewline = [pasteEvent.string rangeOfCharacterFromSet:newlineCharacterSet];

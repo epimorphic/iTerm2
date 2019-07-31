@@ -2,6 +2,7 @@
 
 #import "Api.pbobjc.h"
 #import "DVR.h"
+#import "iTermAPIHelper.h"
 #import "iTermEchoProbe.h"
 #import "iTermFindDriver.h"
 #import "iTermFileDescriptorClient.h"
@@ -34,11 +35,14 @@ extern NSString *const kPTYSessionCapturedOutputDidChange;
 extern NSString *const PTYSessionCreatedNotification;
 extern NSString *const PTYSessionTerminatedNotification;
 extern NSString *const PTYSessionRevivedNotification;
+extern NSString *const iTermSessionWillTerminateNotification;
 
 @class CapturedOutput;
 @class FakeWindow;
+@class iTermAction;
 @class iTermAnnouncementViewController;
 @class iTermEchoProbe;
+@class iTermScriptHistoryEntry;
 @class iTermStatusBarViewController;
 @class iTermSwiftyStringGraph;
 @class iTermVariables;
@@ -132,7 +136,8 @@ typedef enum {
 - (void)nameOfSession:(PTYSession *)session didChangeTo:(NSString *)newName;
 
 // Session-initiated font size. May cause window size to adjust.
-- (void)sessionDidChangeFontSize:(PTYSession *)session;
+- (void)sessionDidChangeFontSize:(PTYSession *)session
+                    adjustWindow:(BOOL)adjustWindow;
 
 // Session-initiated resize.
 - (BOOL)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height;
@@ -186,7 +191,7 @@ typedef enum {
 - (BOOL)sessionBelongsToTabWhoseSplitsAreBeingDragged;
 
 // User double clicked on title bar
-- (void)sessionDoubleClickOnTitleBar;
+- (void)sessionDoubleClickOnTitleBar:(PTYSession *)session;
 
 // Returns the 0-based pane number to use in $ITERM_SESSION_ID.
 - (NSUInteger)sessionPaneNumber:(PTYSession *)session;
@@ -209,6 +214,9 @@ typedef enum {
 // Whether metal is allowed has changed
 - (void)sessionUpdateMetalAllowed;
 
+// Amount of transparency changed (perhaps to none!)
+- (void)sessionTransparencyDidChange;
+
 // Scrollback buffer cleared.
 - (void)sessionDidClearScrollbackBuffer:(PTYSession *)session;
 
@@ -229,6 +237,8 @@ typedef enum {
 
 - (void)sessionDidInvalidateStatusBar:(PTYSession *)session;
 - (void)sessionAddSwiftyStringsToGraph:(iTermSwiftyStringGraph *)graph;
+- (iTermVariableScope *)sessionTabScope;
+- (void)sessionDidReportSelectedTmuxPane:(PTYSession *)session;
 
 @end
 
@@ -236,6 +246,7 @@ typedef enum {
 @interface PTYSession : NSResponder <
     iTermEchoProbeDelegate,
     iTermFindDriverDelegate,
+    iTermSubscribable,
     iTermWeaklyReferenceable,
     PopupDelegate,
     PTYTaskDelegate,
@@ -271,7 +282,8 @@ typedef enum {
 // Do we need to prompt on close for this session?
 @property(nonatomic, readonly) iTermPromptOnCloseReason *promptOnCloseReason;
 
-// Array of subprocessess names.
+// Array of subprocessess names. WARNING: This forces a synchronous update of the process cache.
+// It is up-to-date but too slow to call frequently.
 @property(nonatomic, readonly) NSArray *childJobNames;
 
 // Is the session idle? Used by updateLabelAttributes to send a user notification when processing ends.
@@ -328,7 +340,7 @@ typedef enum {
 @property(nonatomic, assign) NSTimeInterval antiIdlePeriod;
 
 // If true, close the tab when the session ends.
-@property(nonatomic, assign) BOOL autoClose;
+@property(nonatomic, assign) iTermSessionEndAction endAction;
 
 // Should ambiguous-width characters (e.g., Greek) be treated as double-width? Usually a bad idea.
 @property(nonatomic, assign) BOOL treatAmbiguousWidthAsDoubleWidth;
@@ -545,9 +557,11 @@ typedef enum {
                                inView:(SessionView*)sessionView
                          withDelegate:(id<PTYSessionDelegate>)delegate
                         forObjectType:(iTermObjectType)objectType;
+
 + (NSDictionary *)arrangementFromTmuxParsedLayout:(NSDictionary *)parseNode
                                          bookmark:(Profile *)bookmark
-                                   tmuxController:(TmuxController *)tmuxController;
+                                   tmuxController:(TmuxController *)tmuxController
+                                           window:(int)window;
 + (NSString *)guidInArrangement:(NSDictionary *)arrangement;
 
 - (void)textViewFontDidChange;
@@ -559,6 +573,7 @@ typedef enum {
          environment:(NSDictionary *)prog_env
               isUTF8:(BOOL)isUTF8
        substitutions:(NSDictionary *)substitutions
+         synchronous:(BOOL)synchronous
           completion:(void (^)(BOOL))completion;
 
 // This is an alternative to runCommandWithOldCwd and startProgram. It attaches
@@ -752,7 +767,8 @@ typedef enum {
 - (BOOL)hasAnnouncementWithIdentifier:(NSString *)identifier;
 
 // Change the current profile but keep the name the same.
-- (void)setProfile:(NSDictionary *)newProfile preservingName:(BOOL)preserveName;
+- (void)setProfile:(NSDictionary *)newProfile
+    preservingName:(BOOL)preserveName;
 
 // Make the scroll view's document view be this session's textViewWrapper.
 - (void)setScrollViewDocumentView;
@@ -788,12 +804,14 @@ typedef enum {
 // Call this when a session moves to a different tab or window to update the session ID.
 - (void)didMoveSession;
 - (void)triggerDidChangeNameTo:(NSString *)newName;
-- (void)setTmuxWindowTitle:(NSString *)newName;
 - (void)didInitializeSessionWithName:(NSString *)name;
 - (void)profileNameDidChangeTo:(NSString *)name;
 - (void)profileDidChangeToProfileWithName:(NSString *)name;
 - (void)updateStatusBarStyle;
 - (BOOL)checkForCyclesInSwiftyStrings;
+- (void)applyAction:(iTermAction *)action;
+- (void)didUseShellIntegration;
+- (BOOL)copyModeConsumesEvent:(NSEvent *)event;
 
 #pragma mark - API
 
@@ -801,7 +819,10 @@ typedef enum {
 - (ITMGetPromptResponse *)handleGetPromptRequest:(ITMGetPromptRequest *)request;
 - (ITMNotificationResponse *)handleAPINotificationRequest:(ITMNotificationRequest *)request
                                             connectionKey:(NSString *)connectionKey;
-- (ITMSetProfilePropertyResponse_Status)handleSetProfilePropertyForKey:(NSString *)key value:(id)value;
+
+- (ITMSetProfilePropertyResponse_Status)handleSetProfilePropertyForAssignments:(NSArray<iTermTuple<NSString *, id> *> *)tuples
+                                                            scriptHistoryEntry:(iTermScriptHistoryEntry *)scriptHistoryEntry;
+
 - (ITMGetProfilePropertyResponse *)handleGetProfilePropertyForKeys:(NSArray<NSString *> *)keys;
 
 // Run a script-side function. Can include composition, references to variables.

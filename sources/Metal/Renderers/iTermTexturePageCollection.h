@@ -20,19 +20,21 @@ namespace iTerm2 {
         TexturePageCollection(id<MTLDevice> device,
                               const vector_uint2 cellSize,
                               const int pageCapacity,
-                              const int maximumSize) :
+                              const int maximumNumberOfPages) :
         _device(device),
         _cellSize(cellSize),
         _pageCapacity(pageCapacity),
-        _maximumSize(maximumSize),
+        _maximumNumberOfPages(maximumNumberOfPages),
         _openPage(NULL) { }
 
         virtual ~TexturePageCollection() {
             if (_openPage) {
+                _openPage->assert_valid();
                 _openPage->release(this);
                 _openPage = NULL;
             }
             for (auto page : _allPages) {
+                page->assert_valid();
                 page->release(this);
             }
             for (auto it = _pages.begin(); it != _pages.end(); it++) {
@@ -69,6 +71,8 @@ namespace iTerm2 {
                 const GlyphEntry *entry = internal_add(partNumber.intValue, glyphKey, image, emoji, context);
                 result->push_back(entry);
             }
+            DLog(@"Added %@. Count is now %@", glyphKey.description(), @(_allPages.size() * _pageCapacity));
+
             return result;
         }
 
@@ -79,12 +83,18 @@ namespace iTerm2 {
         // Discard least-recently used texture pages.
         void prune_if_needed() {
             if (is_over_maximum_size()) {
-                ELog(@"Pruning. Have %@/%@ glyphs", @(_pageCapacity * _allPages.size()), @(_maximumSize));
-
+                ELog(@"Pruning. Have %@ pages. Each page stores up to %@ glyphs. Max pages is %@",
+                     @(_allPages.size()),
+                     @(_pageCapacity),
+                     @(_maximumNumberOfPages));
                 // Create a copy of texture pages sorted by recency of use (from least recent to most).
                 std::vector<TexturePage *> pages;
                 std::copy(_allPages.begin(), _allPages.end(), std::back_inserter(pages));
                 std::sort(pages.begin(), pages.end(), TexturePageCollection::LRUComparison);
+
+                for (auto page : pages) {
+                    page->assert_valid();
+                }
 
                 for (int i = 0; is_over_maximum_size() && i < pages.size(); i++) {
                     ITOwnershipLog(@"OWNERSHIP: Begin pruning page %p", pages[i]);
@@ -105,9 +115,11 @@ namespace iTerm2 {
                 // Add to allPages and retain that reference too
                 _allPages.insert(_openPage);
                 _openPage->retain(this);
+                _openPage->assert_valid();
             }
 
             TexturePage *openPage = _openPage;
+            openPage->assert_valid();
             ITExtraDebugAssert(_openPage->get_available_count() > 0);
             const GlyphEntry *result = new GlyphEntry(part,
                                                       key,
@@ -123,6 +135,7 @@ namespace iTerm2 {
 
         // Remove all references to `pageToPrune` and all glyph entries that reference the page.
         void internal_prune(TexturePage *pageToPrune) {
+            pageToPrune->assert_valid();
             if (pageToPrune == _openPage) {
                 pageToPrune->release(this);
                 _openPage = NULL;
@@ -167,7 +180,7 @@ namespace iTerm2 {
         }
 
         bool is_over_maximum_size() const {
-            return _allPages.size() * _pageCapacity > _maximumSize;
+            return _allPages.size() > _maximumNumberOfPages;
         }
 
     private:
@@ -177,7 +190,7 @@ namespace iTerm2 {
         id<MTLDevice> _device;
         const vector_uint2 _cellSize;
         const int _pageCapacity;
-        const int _maximumSize;
+        const int _maximumNumberOfPages;
         std::unordered_map<GlyphKey, std::vector<const GlyphEntry *> *> _pages;
         std::set<TexturePage *> _allPages;
         TexturePage *_openPage;

@@ -204,8 +204,11 @@
                                                 hotkeyWindowType:iTermHotkeyWindowTypeNone
                                                          makeKey:YES
                                                      canActivate:YES
+                                              respectTabbingMode:NO
                                                          command:nil
-                                                           block:nil];
+                                                           block:nil
+                                                     synchronous:NO
+                                                      completion:nil];
             } else {
                 // Create the hotkey window for this profile
                 [[iTermHotKeyController sharedInstance] showWindowForProfileHotKey:profileHotkey url:nil];

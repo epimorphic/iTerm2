@@ -154,6 +154,14 @@
     [self setValue:newValue forVariableNamed:iTermVariableKeySessionJob];
 }
 
+- (NSString *)commandLine {
+    return [self valueForVariableName:iTermVariableKeySessionCommandLine];
+}
+
+- (void)setCommandLine:(NSString *)commandLine {
+    [self setValue:commandLine forVariableNamed:iTermVariableKeySessionCommandLine];
+}
+
 - (NSString *)presentationName {
     return [self valueForVariableName:iTermVariableKeySessionPresentationName];
 }
@@ -162,12 +170,12 @@
     [self setValue:newValue forVariableNamed:iTermVariableKeySessionPresentationName];
 }
 
-- (NSString *)tmuxWindowTitle {
-    return [self valueForVariableName:iTermVariableKeySessionTmuxWindowTitle];
+- (NSString *)tmuxPaneTitle {
+    return [self valueForVariableName:iTermVariableKeySessionTmuxPaneTitle];
 }
 
-- (void)setTmuxWindowTitle:(NSString *)newValue {
-    [self setValue:newValue forUndefinedKey:iTermVariableKeySessionTmuxWindowTitle];
+- (void)setTmuxPaneTitle:(NSString *)newValue {
+    [self setValue:newValue forVariableNamed:iTermVariableKeySessionTmuxPaneTitle];
 }
 
 - (NSString *)tmuxRole {

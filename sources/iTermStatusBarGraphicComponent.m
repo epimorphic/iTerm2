@@ -274,15 +274,22 @@ static const CGFloat iTermStatusBarSparklineBottomMargin = 2;
     }
 
     // Draw baseline
-    [[self statusBarTextColor] set];
-    NSRectFill(NSMakeRect(NSMinX(rect), rect.origin.y + iTermStatusBarSparklineBottomMargin, NSWidth(rect), 1));
+    NSColor *baseColor = [self statusBarTextColor];
+    [[baseColor colorWithAlphaComponent:baseColor.alphaComponent * 0.5] set];
+    const NSRect baselineRect = NSMakeRect(NSMinX(rect),
+                                           rect.origin.y + iTermStatusBarSparklineBottomMargin,
+                                           NSWidth(rect),
+                                           1);
+    NSRectFillUsingOperation(baselineRect, NSCompositingOperationSourceOver);
 
     if (self.numberOfTimeSeries == 1) {
-        NSBezierPath *path = [self bezierPathWithValues:self.values inRect:rect];
+        NSBezierPath *path = [self bezierPathWithValues:[self.values it_arrayByKeepingLastN:self.maximumNumberOfValues]
+                                                 inRect:rect];
         [self drawBezierPath:path forTimeSeries:0];
     } else {
         for (NSInteger i = 0; i < self.numberOfTimeSeries; i++) {
-            NSArray<NSNumber *> *values = [self.values mapWithBlock:^id(id anObject) {
+            NSArray *rawValues = [[self values] it_arrayByKeepingLastN:self.maximumNumberOfValues];
+            NSArray<NSNumber *> *values = [rawValues mapWithBlock:^id(id anObject) {
                 return [[NSArray castFrom:anObject] objectAtIndex:i];
             }];
             NSBezierPath *path = [self bezierPathWithValues:values inRect:rect];
@@ -307,23 +314,32 @@ static const CGFloat iTermStatusBarSparklineBottomMargin = 2;
 
 - (NSBezierPath *)bezierPathWithValues:(NSArray<NSNumber *> *)values
                                 inRect:(NSRect)rect {
-    const CGFloat barWidth = rect.size.width / self.maximumNumberOfValues;
+    if (self.maximumNumberOfValues == 0) {
+        return nil;
+    }
+    const CGFloat barWidth = rect.size.width / (self.maximumNumberOfValues - 1);
     if (barWidth == 0) {
         return nil;
     }
 
-    CGFloat x = NSMaxX(rect) - values.count * barWidth;
+    NSInteger segments = MAX(0, ((NSInteger)values.count) - 1);
+    const CGFloat x0 = NSMaxX(rect) - segments * barWidth;
     const CGFloat y = iTermStatusBarSparklineBottomMargin + rect.origin.y + 0.5;
     NSBezierPath *path = [[NSBezierPath alloc] init];
     path.miterLimit = 1;
-    [path moveToPoint:NSMakePoint(x, y)];
     const double ceiling = MAX(1, self.ceiling);
+    int i = 0;
     for (NSNumber *n in values) {
         const CGFloat height = n.doubleValue * (rect.size.height - iTermStatusBarSparklineBottomMargin * 2) / ceiling;
-        [path lineToPoint:NSMakePoint(x, y + height + 0.5)];
-        x += barWidth;
+        const CGFloat x = x0 + i * barWidth;
+        const NSPoint point = NSMakePoint(x, y + height);
+        if (i == 0) {
+            [path moveToPoint:point];
+        } else {
+            [path lineToPoint:point];
+        }
+        i++;
     }
-    [path lineToPoint:NSMakePoint(x, y + 0.5)];
     return path;
 }
 

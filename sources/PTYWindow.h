@@ -29,6 +29,7 @@
 #import <Cocoa/Cocoa.h>
 #import "iTermWeakReference.h"
 
+@protocol PSMTabStyle;
 @class PTYTab;
 @class PTYSession;
 
@@ -52,6 +53,7 @@ extern const NSTimeInterval iTermWindowTitleChangeMinimumInterval;
 - (BOOL)terminalWindowShouldConstrainFrameToScreen;
 - (NSColor *)terminalWindowDecorationBackgroundColor;
 - (NSColor *)terminalWindowDecorationTextColorForBackgroundColor:(NSColor *)backgroundColor;
+- (id<PSMTabStyle>)terminalWindowTabStyle;
 - (NSColor *)terminalWindowDecorationControlColor;
 - (BOOL)terminalWindowUseMinimalStyle;
 - (BOOL)ptyWindowFullScreen;
@@ -67,9 +69,11 @@ extern const NSTimeInterval iTermWindowTitleChangeMinimumInterval;
 @property(nonatomic, readonly) BOOL titleChangedRecently;
 @property(nonatomic, readonly) BOOL isCompact;
 @property(nonatomic) NSInteger it_openingSheet;
+@property (nonatomic) BOOL it_becomingKey;
 
 - (NSColor *)it_terminalWindowDecorationBackgroundColor;
 - (NSColor *)it_terminalWindowDecorationTextColorForBackgroundColor:(NSColor *)backgroundColor;
+- (id<PSMTabStyle>)it_tabStyle;
 - (NSColor *)it_terminalWindowDecorationControlColor;
 - (BOOL)it_terminalWindowUseMinimalStyle;
 
@@ -91,7 +95,6 @@ typedef NSWindow<iTermWeaklyReferenceable, PTYWindow> iTermTerminalWindow;
 
 // A normal terminal window.
 @interface iTermWindow : NSWindow<iTermWeaklyReferenceable, PTYWindow>
-
 @end
 
 @interface iTermCompactWindow : NSWindow<iTermWeaklyReferenceable, PTYWindow>
@@ -99,7 +102,6 @@ typedef NSWindow<iTermWeaklyReferenceable, PTYWindow> iTermTerminalWindow;
 
 // A floating hotkey window. This can overlap a lion fullscreen window.
 @interface iTermPanel : NSPanel<iTermWeaklyReferenceable, PTYWindow>
-
 @end
 
 @interface iTermCompactPanel : NSPanel<iTermWeaklyReferenceable, PTYWindow>

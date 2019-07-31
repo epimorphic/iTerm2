@@ -81,6 +81,26 @@ NS_ASSUME_NONNULL_BEGIN
     [_children addObject:child];
 }
 
+- (BOOL)isAutoLaunchFolderItem {
+    if (!_isFolder) {
+        // The auto launch folder is a folder
+        return NO;
+    }
+    if (!_parent) {
+        // Is root
+        return NO;
+    }
+    if (_parent.parent != nil) {
+        // Parent is not root
+        return NO;
+    }
+    if (![self.name isEqualToString:@"AutoLaunch"]) {
+        return NO;
+    }
+
+    return YES;
+}
+
 @end
 
 @interface iTermScriptsMenuController()<NSOpenSavePanelDelegate, SCEventListenerProtocol>
@@ -147,7 +167,7 @@ NS_ASSUME_NONNULL_BEGIN
         NSMenuItem *item = container.itemArray[i];
         if (item.submenu) {
             [self addMenuItemsIn:item.submenu fromIndex:0 toArray:result path:[path stringByAppendingPathComponent:item.title]];
-        } else {
+        } else if (!item.isAlternate) {
             [result addObject:[path stringByAppendingPathComponent:item.title]];
         }
     }
@@ -169,13 +189,13 @@ NS_ASSUME_NONNULL_BEGIN
     _allScripts = [self allScriptsFromMenu];
 }
 
-+ (NSArray<iTermScriptItem *> *)scriptItems {
+- (NSArray<iTermScriptItem *> *)scriptItems {
     iTermScriptItem *root = [[iTermScriptItem alloc] initFolderWithPath:[[NSFileManager defaultManager] scriptsPathWithoutSpaces] parent:nil];
     [self populateScriptItem:root];
     return root.children;
 }
 
-+ (void)populateScriptItem:(iTermScriptItem *)parentFolderItem {
+- (void)populateScriptItem:(iTermScriptItem *)parentFolderItem {
     NSString *root = parentFolderItem.path;
     NSDirectoryEnumerator *directoryEnumerator =
         [[NSFileManager defaultManager] enumeratorAtPath:root];
@@ -204,12 +224,64 @@ NS_ASSUME_NONNULL_BEGIN
             }
         } else if ([scriptExtensions containsObject:[file pathExtension]]) {
             [parentFolderItem addChild:[[iTermScriptItem alloc] initFileWithPath:path parent:parentFolderItem]];
+        } else if ([file.pathExtension isEqualToString:@"its"]) {
+            [self didFindScriptArchive:path autolaunch:parentFolderItem.isAutoLaunchFolderItem];
         }
     }
 }
 
+- (void)didFindScriptArchive:(NSString *)file autolaunch:(BOOL)autolaunch {
+    static NSMutableSet<NSString *> *alreadyFound;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        alreadyFound = [NSMutableSet set];
+    });
+    if ([alreadyFound containsObject:file]) {
+        return;
+    }
+    [alreadyFound addObject:file];
+    const iTermWarningSelection selection =
+    [iTermWarning showWarningWithTitle:[NSString stringWithFormat:@"A script archive named “%@” was found in the Scripts directory. Would you like to install it?", file.lastPathComponent]
+                               actions:@[ @"OK", @"Cancel", @"Move to Trash" ]
+                             accessory:nil
+                            identifier:@"NoSyncInstallScriptArchive"
+                           silenceable:kiTermWarningTypeTemporarilySilenceable
+                               heading:@"Install Script Archive?"
+                                window:nil];
+    NSURL *url = [NSURL fileURLWithPath:file];
+    switch (selection) {
+        case kiTermWarningSelection0: {
+            [iTermScriptImporter importScriptFromURL:url
+                                       userInitiated:YES
+                                     offerAutoLaunch:autolaunch
+                                          completion:^(NSString * _Nullable errorMessage, BOOL quiet, NSURL *location) {
+                                              if (quiet) {
+                                                  return;
+                                              }
+                                              if (errorMessage == nil) {
+                                                  [[NSFileManager defaultManager] trashItemAtURL:url
+                                                                                resultingItemURL:nil
+                                                                                           error:nil];
+                                              }
+                                              [self importDidFinishWithErrorMessage:errorMessage
+                                                                           location:location
+                                                                        originalURL:url];
+                                          }];
+            break;
+        }
+        case kiTermWarningSelection1:
+            break;
+        case kiTermWarningSelection2:
+            [[NSFileManager defaultManager] trashItemAtURL:url
+                                          resultingItemURL:nil
+                                                     error:nil];
+        default:
+            break;
+    }
+}
+
 - (void)addMenuItemsTo:(NSMenu *)rootMenu {
-    [self addMenuItemsForScriptItems:[iTermScriptsMenuController scriptItems]
+    [self addMenuItemsForScriptItems:[self scriptItems]
                               toMenu:rootMenu];
 }
 
@@ -285,7 +357,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)chooseAndImportScript {
     NSOpenPanel *panel = [[NSOpenPanel alloc] init];
-    panel.allowedFileTypes = @[ @"zip", @"its" ];
+    panel.allowedFileTypes = @[ @"zip", @"its", @"py" ];
     if ([panel runModal] == NSModalResponseOK) {
         NSURL *url = panel.URL;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -297,6 +369,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)importFromURL:(NSURL *)url {
     [iTermScriptImporter importScriptFromURL:url
                                userInitiated:YES
+                             offerAutoLaunch:NO
                                   completion:^(NSString * _Nullable errorMessage, BOOL quiet, NSURL *location) {
                                       // Mojave deadlocks if you do this without the dispatch_async
                                       dispatch_async(dispatch_get_main_queue(), ^{
@@ -310,7 +383,9 @@ NS_ASSUME_NONNULL_BEGIN
                                   }];
 }
 
-- (void)importDidFinishWithErrorMessage:(NSString *)errorMessage location:(NSURL *)location originalURL:(NSURL *)url {
+- (void)importDidFinishWithErrorMessage:(NSString *)errorMessage
+                               location:(NSURL *)location
+                            originalURL:(NSURL *)url {
     if (errorMessage) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Could Not Install Script";
@@ -411,7 +486,7 @@ NS_ASSUME_NONNULL_BEGIN
         [iTermAPIScriptLauncher launchScript:mainPyPath
                                     fullPath:fullPath
                               withVirtualEnv:venv
-                                 setupPyPath:[fullPath stringByAppendingPathComponent:@"setup.py"]
+                                setupCfgPath:[fullPath stringByAppendingPathComponent:@"setup.cfg"]
                           explicitUserAction:explicitUserAction];
         return;
     }
@@ -515,12 +590,24 @@ NS_ASSUME_NONNULL_BEGIN
     if (url) {
         [[iTermPythonRuntimeDownloader sharedInstance] downloadOptionalComponentsIfNeededWithConfirmation:YES
                                                                                             pythonVersion:pythonVersion
+                                                                                minimumEnvironmentVersion:0
                                                                                        requiredToContinue:YES
-                                                                                           withCompletion:^(BOOL ok) {
-            if (!ok) {
-                return;
-            }
-            [self reallyCreateNewPythonScriptAtURL:url picker:picker dependencies:dependencies pythonVersion:pythonVersion];
+                                                                                           withCompletion:
+         ^(iTermPythonRuntimeDownloaderStatus status) {
+             switch (status) {
+                 case iTermPythonRuntimeDownloaderStatusRequestedVersionNotFound:
+                 case iTermPythonRuntimeDownloaderStatusCanceledByUser:
+                 case iTermPythonRuntimeDownloaderStatusUnknown:
+                 case iTermPythonRuntimeDownloaderStatusWorking:
+                 case iTermPythonRuntimeDownloaderStatusError: {
+                     return;
+                 }
+
+                 case iTermPythonRuntimeDownloaderStatusNotNeeded:
+                 case iTermPythonRuntimeDownloaderStatusDownloaded:
+                     break;
+             }
+             [self reallyCreateNewPythonScriptAtURL:url picker:picker dependencies:dependencies pythonVersion:pythonVersion];
         }];
     }
 }
@@ -541,20 +628,27 @@ NS_ASSUME_NONNULL_BEGIN
                                                                      [pleaseWait.window makeKeyAndOrderFront:nil];
                                                                  }];
         _disablePathWatcher++;
-        [[iTermPythonRuntimeDownloader sharedInstance] installPythonEnvironmentTo:folder eventualLocation:folder pythonVersion:pythonVersion dependencies:dependencies createSetupPy:YES completion:^(BOOL ok) {
-            [[NSNotificationCenter defaultCenter] removeObserver:token];
-            [pleaseWait.window close];
-            if (!ok) {
-                NSAlert *alert = [[NSAlert alloc] init];
-                alert.messageText = @"Installation Failed";
-                alert.informativeText = @"Remove ~/Library/Application Support/iTerm2/iterm2env and try again.";
-                [alert runModal];
-                return;
-            }
-            [self finishInstallingNewPythonScriptForPicker:picker url:url];
-            self->_disablePathWatcher--;
-            [self build];
-        }];
+        [[iTermPythonRuntimeDownloader sharedInstance] installPythonEnvironmentTo:folder
+                                                                 eventualLocation:folder
+                                                                    pythonVersion:pythonVersion
+                                                               environmentVersion:[[iTermPythonRuntimeDownloader sharedInstance] installedVersionWithPythonVersion:pythonVersion]
+                                                                     dependencies:dependencies
+                                                                   createSetupCfg:YES
+                                                                       completion:
+         ^(iTermInstallPythonStatus status) {
+             [[NSNotificationCenter defaultCenter] removeObserver:token];
+             [pleaseWait.window close];
+             if (status != iTermInstallPythonStatusOK) {
+                 NSAlert *alert = [[NSAlert alloc] init];
+                 alert.messageText = @"Installation Failed";
+                 alert.informativeText = @"Remove ~/Library/Application Support/iTerm2/iterm2env and try again.";
+                 [alert runModal];
+                 return;
+             }
+             [self finishInstallingNewPythonScriptForPicker:picker url:url];
+             self->_disablePathWatcher--;
+             [self build];
+         }];
     } else {
         [self finishInstallingNewPythonScriptForPicker:picker url:url];
     }
@@ -829,7 +923,7 @@ NS_ASSUME_NONNULL_BEGIN
         NSString *name = url.path.lastPathComponent;
         // For a path like foo/bar this returns foo/bar/bar/bar.py
         // So the hierarchy looks like
-        // ~/Library/ApplicationSupport/iTerm2/Scripts/foo/bar/setup.py
+        // ~/Library/ApplicationSupport/iTerm2/Scripts/foo/bar/setup.cfg
         // ~/Library/ApplicationSupport/iTerm2/Scripts/foo/bar/iterm2env
         // ~/Library/ApplicationSupport/iTerm2/Scripts/foo/bar/bar/
         // ~/Library/ApplicationSupport/iTerm2/Scripts/foo/bar/bar/bar.py

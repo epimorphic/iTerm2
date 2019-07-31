@@ -8,6 +8,7 @@
 #import "iTermStatusBarKnobNumericViewController.h"
 
 #import "NSObject+iTerm.h"
+#import "NSStringITerm.h"
 
 @interface iTermStatusBarKnobNumericViewController ()
 
@@ -32,7 +33,7 @@
 
 - (void)controlTextDidChange:(NSNotification *)obj {
     NSString *string = [(NSControl *)obj.object stringValue];
-    NSNumber *safeValue = @(string.doubleValue);
+    NSNumber *safeValue = @(string.it_localizedDoubleValue);
     _value = safeValue;
     _stepper.doubleValue = safeValue.doubleValue;
 }
@@ -83,6 +84,10 @@
 
 - (void)insertNewline:(id)sender {
     [self.view.window.sheetParent endSheet:self.view.window returnCode:NSModalResponseOK];
+}
+
+- (void)setHelpURL:(NSURL *)url {
+    NSAssert(NO, @"Not supported");
 }
 
 @end

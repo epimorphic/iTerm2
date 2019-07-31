@@ -8,6 +8,7 @@
 #import "iTermGitPollWorker.h"
 
 #import "DebugLogging.h"
+
 #import "iTermCommandRunner.h"
 #import "iTermGitCache.h"
 #import "iTermTuple.h"
@@ -16,12 +17,14 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef void (^iTermGitCallback)(iTermGitState *);
+static int gNumberOfCommandRunners;
+
+typedef void (^iTermGitCallback)(iTermGitState * _Nullable);
 
 @implementation iTermGitPollWorker {
     iTermCommandRunner *_commandRunner;
+    NSMutableArray<iTermCommandRunner *> *_terminatingCommandRunners;
     NSMutableData *_readData;
-    NSInteger _generation;
     NSMutableArray<NSString *> *_queue;
     iTermGitCache *_cache;
     NSMutableDictionary<NSString *, NSMutableArray<iTermGitCallback> *> *_outstanding;
@@ -49,6 +52,7 @@ typedef void (^iTermGitCallback)(iTermGitState *);
         _queue = [NSMutableArray array];
         _cache = [[iTermGitCache alloc] init];
         _outstanding = [NSMutableDictionary dictionary];
+        _terminatingCommandRunners = [NSMutableArray array];
     }
     return self;
 }
@@ -76,16 +80,24 @@ typedef void (^iTermGitCallback)(iTermGitState *);
     callbacks = [NSMutableArray array];
     _outstanding[path] = callbacks;
 
-    [self createCommandRunnerIfNeeded];
-    DLog(@"git component requesting poll of %@", path);
+    if (![self createCommandRunnerIfNeeded]) {
+        DLog(@"Can't create command runner for %@", path);
+        [_outstanding removeObjectForKey:path];
+        completion(nil);
+        return;
+    }
+    DLog(@"Using command runner %@ for path %@", _commandRunner, path);
     __block BOOL finished = NO;
     void (^wrapper)(iTermGitState *) = ^(iTermGitState *state) {
         if (state) {
             [self->_cache setState:state forPath:path ttl:2];
         }
         if (!finished) {
+            DLog(@"Command runner %@ finished", self->_commandRunner);
             finished = YES;
             completion(state);
+        } else {
+            DLog(@"[already killed] - Command runner %@ finished", self->_commandRunner);
         }
     };
     [callbacks addObject:[wrapper copy]];
@@ -104,13 +116,22 @@ typedef void (^iTermGitCallback)(iTermGitState *);
     });
 }
 
-- (void)createCommandRunnerIfNeeded {
+- (BOOL)canCreateCommandRunner {
+    static const NSInteger maximumNumberOfCommandRunners = 4;
+    return gNumberOfCommandRunners < maximumNumberOfCommandRunners;
+}
+
+- (BOOL)createCommandRunnerIfNeeded {
     if (!_commandRunner) {
+        if (![self canCreateCommandRunner]) {
+            DLog(@"Can't create task runner");
+            return NO;
+        }
         NSBundle *bundle = [NSBundle bundleForClass:self.class];
         NSString *script = [bundle pathForResource:@"iterm2_git_poll" ofType:@"sh"];
         if (!script) {
             DLog(@"failed to get path to script from bundle %@", bundle);
-            return;
+            return NO;
         }
         DLog(@"Launch new git poller script from %@", script);
         NSString *sandboxConfig = [[[NSString stringWithContentsOfFile:[bundle pathForResource:@"git" ofType:@"sb"]
@@ -118,16 +139,22 @@ typedef void (^iTermGitCallback)(iTermGitState *);
                                                                  error:nil] componentsSeparatedByString:@"\n"] componentsJoinedByString:@" "];
         assert(sandboxConfig.length > 0);
         _commandRunner = [[iTermCommandRunner alloc] initWithCommand:@"/usr/bin/sandbox-exec" withArguments:@[ @"-p", sandboxConfig, script ] path:@"/"];
+        [_commandRunner loadPathForGit];
+        if (_commandRunner) {
+            gNumberOfCommandRunners++;
+            DLog(@"Incremented number of command runners to %@", @(gNumberOfCommandRunners));
+        }
         __weak __typeof(self) weakSelf = self;
         _commandRunner.outputHandler = ^(NSData *data) {
             [weakSelf didRead:data];
         };
-        NSInteger generation = _generation++;
+        __weak __typeof(_commandRunner) weakCommandRunner = _commandRunner;
         _commandRunner.completion = ^(int code) {
-            [weakSelf scriptDied:generation];
+            [weakSelf commandRunnerDied:weakCommandRunner];
         };
         [_commandRunner run];
     }
+    return YES;
 }
 
 - (void)didRead:(NSData *)data {
@@ -137,9 +164,7 @@ typedef void (^iTermGitCallback)(iTermGitState *);
     const size_t maxBytes = 100000;
     if (_readData.length + data.length > maxBytes) {
         DLog(@"wtf, have queued up more than 100k of output from the git poller script");
-        [_commandRunner terminate];
-        _commandRunner = nil;
-        [_readData setLength:0];
+        [self killScript];
         return;
     }
 
@@ -178,10 +203,13 @@ typedef void (^iTermGitCallback)(iTermGitState *);
 
     DLog(@"Parsed dict:\n%@", dict);
     iTermGitState *state = [[iTermGitState alloc] init];
+    state.xcode = dict[@"XCODE"];
     state.dirty = [dict[@"DIRTY"] isEqualToString:@"dirty"];
     state.pushArrow = dict[@"PUSH"];
     state.pullArrow = dict[@"PULL"];
     state.branch = dict[@"BRANCH"];
+    state.adds = [dict[@"ADDS"] integerValue];
+    state.deletes = [dict[@"DELETES"] integerValue];
 
     NSString *path = _queue.firstObject;
     if (path) {
@@ -197,7 +225,13 @@ typedef void (^iTermGitCallback)(iTermGitState *);
 }
 
 - (void)killScript {
+    if (!_commandRunner) {
+        DLog(@"Command runner is already nil, doing nothing.");
+        return;
+    }
+    DLog(@"KILL command runner %@", _commandRunner);
     DLog(@"killing wedged git poller script");
+    [_terminatingCommandRunners addObject:_commandRunner];
     [_commandRunner terminate];
     [self reset];
 }
@@ -206,14 +240,33 @@ typedef void (^iTermGitCallback)(iTermGitState *);
     [_readData setLength:0];
     _commandRunner = nil;
     [_queue removeAllObjects];
+
+    // Report failure.
+    NSArray<NSMutableArray<iTermGitCallback> *> *callbackArrays = _outstanding.allValues;
     [_outstanding removeAllObjects];
+    for (NSArray<iTermGitCallback> *callbacks in callbackArrays) {
+        for (iTermGitCallback callback in callbacks) {
+            callback(nil);
+        }
+    }
 }
 
-- (void)scriptDied:(NSInteger)generation {
-    DLog(@"* script died *");
-    if (generation != _generation) {
+- (void)commandRunnerDied:(iTermCommandRunner *)commandRunner {
+    DLog(@"* command runner died: %@ *", commandRunner);
+    if (!commandRunner) {
+        DLog(@"nil command runner");
         return;
     }
+    gNumberOfCommandRunners--;
+    DLog(@"Decremented number of command runners to %@", @(gNumberOfCommandRunners));
+    if ([_terminatingCommandRunners containsObject:commandRunner]) {
+        [_terminatingCommandRunners removeObject:commandRunner];
+        return;
+    }
+    // This assertion is here in because calling reset when this precondition
+    // is violated means you're going to nil out your current command runner even
+    // though it's still running.
+    assert(commandRunner == _commandRunner);
     [self reset];
 }
 

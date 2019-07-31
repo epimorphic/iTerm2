@@ -63,16 +63,19 @@
 #import "iTermRestorableSession.h"
 #import "iTermSetCurrentTerminalHelper.h"
 #import "iTermSystemVersion.h"
+#import "iTermUserDefaults.h"
 #import "iTermWarning.h"
 #import "PTYWindow.h"
+
 #include <objc/runtime.h>
+
+@import Sparkle;
 
 @interface NSApplication (Undocumented)
 - (void)_cycleWindowsReversed:(BOOL)back;
 @end
 
 // Pref keys
-static NSString *const kSelectionRespectsSoftBoundariesKey = @"Selection Respects Soft Boundaries";
 static iTermController *gSharedInstance;
 
 @interface iTermController()<iTermSetCurrentTerminalHelperDelegate>
@@ -254,14 +257,18 @@ static iTermController *gSharedInstance;
         DLog(@"Creating a new tmux window");
         [_frontTerminalWindowController newTmuxWindow:sender];
     } else {
-        [self launchBookmark:nil inTerminal:nil];
+        [self launchBookmark:nil
+                  inTerminal:nil
+          respectTabbingMode:YES];
     }
 }
 
 - (void)newSessionInTabAtIndex:(id)sender {
     Profile *bookmark = [[ProfileModel sharedInstance] bookmarkWithGuid:[sender representedObject]];
     if (bookmark) {
-        [self launchBookmark:bookmark inTerminal:_frontTerminalWindowController];
+        [self launchBookmark:bookmark
+                  inTerminal:_frontTerminalWindowController
+          respectTabbingMode:NO];
     }
 }
 
@@ -290,7 +297,9 @@ static iTermController *gSharedInstance;
 - (void)newSessionInWindowAtIndex:(id)sender {
     Profile *bookmark = [[ProfileModel sharedInstance] bookmarkWithGuid:[sender representedObject]];
     if (bookmark) {
-        [self launchBookmark:bookmark inTerminal:nil];
+        [self launchBookmark:bookmark
+                  inTerminal:nil
+          respectTabbingMode:NO];
     }
 }
 
@@ -309,7 +318,9 @@ static iTermController *gSharedInstance;
         NSString *guid = [ProfileModel freshGuid];
         bookmark = [bookmark dictionaryBySettingObject:guid forKey:KEY_GUID];
     }
-    PTYSession *session = [self launchBookmark:bookmark inTerminal:_frontTerminalWindowController];
+    PTYSession *session = [self launchBookmark:bookmark
+                                    inTerminal:_frontTerminalWindowController
+                            respectTabbingMode:NO];
     if (divorced) {
         [session divorceAddressBookEntryFromPreferences];
     }
@@ -325,7 +336,9 @@ static iTermController *gSharedInstance;
         [[_frontTerminalWindowController currentSession] isTmuxClient]) {
         [_frontTerminalWindowController newTmuxTab:sender];
     } else {
-        [self launchBookmark:nil inTerminal:_frontTerminalWindowController];
+        [self launchBookmark:nil
+                  inTerminal:_frontTerminalWindowController
+          respectTabbingMode:NO];
     }
 }
 
@@ -835,12 +848,16 @@ static iTermController *gSharedInstance;
     PseudoTerminal *term = newWindow ? nil : [self currentTerminal];
     for (Profile *bookmark in bookmarks) {
         if (!term) {
-            PTYSession *session = [self launchBookmark:bookmark inTerminal:nil];
+            PTYSession *session = [self launchBookmark:bookmark
+                                            inTerminal:nil
+                                    respectTabbingMode:NO];
             if (session) {
                 term = [self terminalWithSession:session];
             }
         } else {
-            [self launchBookmark:bookmark inTerminal:term];
+            [self launchBookmark:bookmark
+                      inTerminal:term
+              respectTabbingMode:NO];
         }
     }
 }
@@ -942,7 +959,7 @@ static iTermController *gSharedInstance;
 
 - (iTermWindowType)windowTypeForBookmark:(Profile *)aDict {
     if ([aDict objectForKey:KEY_WINDOW_TYPE]) {
-        int windowType = [[aDict objectForKey:KEY_WINDOW_TYPE] intValue];
+        const iTermWindowType windowType = iTermThemedWindowType([[aDict objectForKey:KEY_WINDOW_TYPE] intValue]);
         if (windowType == WINDOW_TYPE_TRADITIONAL_FULL_SCREEN &&
             [iTermPreferences boolForKey:kPreferenceKeyLionStyleFullscreen]) {
             return WINDOW_TYPE_LION_FULL_SCREEN;
@@ -950,7 +967,7 @@ static iTermController *gSharedInstance;
             return windowType;
         }
     } else {
-        return WINDOW_TYPE_NORMAL;
+        return iTermWindowDefaultType();
     }
 }
 
@@ -980,7 +997,7 @@ static iTermController *gSharedInstance;
     if ([iTermAdvancedSettingsModel serializeOpeningMultipleFullScreenWindows]) {
         windowType = [self windowTypeForBookmark:profile];
     } else {
-        windowType = [iTermProfilePreferences intForKey:KEY_WINDOW_TYPE inProfile:profile];
+        windowType = iTermThemedWindowType([iTermProfilePreferences intForKey:KEY_WINDOW_TYPE inProfile:profile]);
     }
     PseudoTerminal *term =
         [[[PseudoTerminal alloc] initWithSmartLayout:YES
@@ -1010,15 +1027,20 @@ static iTermController *gSharedInstance;
     [[iTermFullScreenWindowManager sharedInstance] makeWindowEnterFullScreen:term.ptyWindow];
 }
 
-- (PTYSession *)launchBookmark:(NSDictionary *)bookmarkData inTerminal:(PseudoTerminal *)theTerm {
+- (PTYSession *)launchBookmark:(NSDictionary *)bookmarkData
+                    inTerminal:(PseudoTerminal *)theTerm
+            respectTabbingMode:(BOOL)respectTabbingMode {
     return [self launchBookmark:bookmarkData
                      inTerminal:theTerm
                         withURL:nil
                        hotkeyWindowType:iTermHotkeyWindowTypeNone
                         makeKey:YES
                     canActivate:YES
+             respectTabbingMode:respectTabbingMode
                         command:nil
-                          block:nil];
+                          block:nil
+                    synchronous:NO
+                     completion:nil];
 }
 
 - (NSString *)validatedAndShellEscapedUsername:(NSString *)username {
@@ -1147,15 +1169,71 @@ static iTermController *gSharedInstance;
     }
 }
 
+- (PseudoTerminal *)windowControllerForNewTabWithProfile:(Profile *)profile
+                                               candidate:(PseudoTerminal *)preferredWindowController
+                                      respectTabbingMode:(BOOL)respectTabbingMode {
+    const BOOL preventTab = [profile[KEY_PREVENT_TAB] boolValue];
+    if (preventTab) {
+        return nil;
+    }
+    if (!respectTabbingMode || [iTermAdvancedSettingsModel disregardDockSettingToOpenTabsInsteadOfWindows]) {
+        return preferredWindowController;
+    }
+    switch ([iTermUserDefaults appleWindowTabbingMode]) {
+        case iTermAppleWindowTabbingModeManual:
+            return preferredWindowController;
+        case iTermAppleWindowTabbingModeAlways:
+            if (preferredWindowController) {
+                return preferredWindowController;
+            }
+            [self maybeWarnAboutOpeningInTab];
+            return [self currentTerminal];
+        case iTermAppleWindowTabbingModeFullscreen: {
+            if (preferredWindowController) {
+                return preferredWindowController;
+            }
+            PseudoTerminal *tempTerm = [[iTermController sharedInstance] currentTerminal];
+            if (tempTerm && tempTerm.windowType == WINDOW_TYPE_LION_FULL_SCREEN) {
+                [self maybeWarnAboutOpeningInTab];
+                return tempTerm;
+            }
+            return nil;
+        }
+    }
+}
+
+- (void)maybeWarnAboutOpeningInTab {
+#if ENABLE_RESPECT_DOCK_PREFER_TABS_SETTING
+    NSString *const firstVersionRespectingSetting = @"SET THIS";
+    if (iTermUserDefaults.haveBeenWarnedAboutTabDockSetting) {
+        return;
+    }
+    id<SUVersionComparison> comparator = [SUStandardVersionComparator defaultComparator];
+    const BOOL haveUsedOlderVersion = [[iTermPreferences allAppVersionsUsedOnThisMachine].allObjects anyWithBlock:^BOOL(NSString *version) {
+        return [comparator compareVersion:firstVersionRespectingSetting toVersion:version] == NSOrderedDescending;
+    }];
+    if (!haveUsedOlderVersion) {
+        return;
+    }
+    [[iTermNotificationController sharedInstance] postNotificationWithTitle:@"Creating a tab"
+                                                                     detail:@"The system preference to open a tab instead of a window is now respected in iTerm2."
+                                                                        URL:[NSURL URLWithString:@"https://gitlab.com/gnachman/iterm2/wikis/Prefer-Tabs-When-Opening-Documents"]];
+    iTermUserDefaults.haveBeenWarnedAboutTabDockSetting = YES;
+#endif
+}
+
 - (PTYSession *)launchBookmark:(NSDictionary *)bookmarkData
                     inTerminal:(PseudoTerminal *)theTerm
                        withURL:(NSString *)url
               hotkeyWindowType:(iTermHotkeyWindowType)hotkeyWindowType
                        makeKey:(BOOL)makeKey
                    canActivate:(BOOL)canActivate
+            respectTabbingMode:(BOOL)respectTabbingMode
                        command:(NSString *)command
-                         block:(PTYSession *(^)(Profile *, PseudoTerminal *))block {
-    DLog(@"launchBookmark:inTerminal:withUrl:isHotkey:makeKey:canActivate:command:block:");
+                         block:(PTYSession *(^)(Profile *, PseudoTerminal *))block
+                   synchronous:(BOOL)synchronous
+                    completion:(void (^ _Nullable)(BOOL))completion {
+    DLog(@"launchBookmark:inTerminal:withUrl:isHotkey:makeKey:canActivate:command:block:synchronous:completion:");
     DLog(@"Profile:\n%@", bookmarkData);
     DLog(@"URL: %@", url);
     DLog(@"hotkey window type: %@", @(hotkeyWindowType));
@@ -1179,15 +1257,17 @@ static iTermController *gSharedInstance;
         aDict = [self profile:aDict modifiedToOpenURL:url forObjectType:objectType];
         if (aDict == nil) {
             // Bogus hostname detected
+            if (completion != nil) {
+                completion(NO);
+            }
             return nil;
         }
     }
     if (!bookmarkData) {
         DLog(@"Using profile:\n%@", aDict);
     }
-    if (theTerm && [[aDict objectForKey:KEY_PREVENT_TAB] boolValue]) {
-        theTerm = nil;
-    }
+
+    theTerm = [self windowControllerForNewTabWithProfile:aDict candidate:theTerm respectTabbingMode:respectTabbingMode];
 
     // Where do we execute this command?
     BOOL toggle = NO;
@@ -1202,7 +1282,7 @@ static iTermController *gSharedInstance;
             term = theTerm;
             [term finishInitializationWithSmartLayout:YES
                                            windowType:windowType
-                                      savedWindowType:WINDOW_TYPE_NORMAL
+                                      savedWindowType:iTermWindowDefaultType()
                                                screen:[aDict objectForKey:KEY_SCREEN] ? [[aDict objectForKey:KEY_SCREEN] intValue] : -1
                                      hotkeyWindowType:hotkeyWindowType
                                               profile:aDict];
@@ -1232,6 +1312,7 @@ static iTermController *gSharedInstance;
 
     PTYSession* session = nil;
 
+    BOOL callCompletionBlock = (completion != nil);
     if (block) {
         DLog(@"Create a session via callback");
         session = block(aDict, term);
@@ -1239,6 +1320,7 @@ static iTermController *gSharedInstance;
         DLog(@"Creating a new session");
         session = [[term.sessionFactory newSessionWithProfile:aDict] autorelease];
         [term addSessionInNewTab:session];
+        callCompletionBlock = NO;
         const BOOL ok = [term.sessionFactory attachOrLaunchCommandInSession:session
                                                                   canPrompt:YES
                                                                  objectType:objectType
@@ -1252,15 +1334,25 @@ static iTermController *gSharedInstance;
                                                                      isUTF8:nil
                                                               substitutions:nil
                                                            windowController:term
-                                                                 completion:nil];
+                                                                synchronous:synchronous
+                                                                 completion:completion];
         if (!ok) {
+            completion(NO);
             session = nil;
         }
     } else {
-        session = [term createTabWithProfile:aDict withCommand:command environment:nil];
+        callCompletionBlock = NO;
+        session = [term createTabWithProfile:aDict
+                                 withCommand:command
+                                 environment:nil
+                                 synchronous:synchronous
+                                  completion:completion];
     }
     if (!session && term.numberOfTabs == 0) {
         [[term window] close];
+        if (callCompletionBlock) {
+            completion(NO);
+        }
         return nil;
     }
 
@@ -1290,6 +1382,9 @@ static iTermController *gSharedInstance;
         }
     }
 
+    if (callCompletionBlock) {
+        completion(YES);
+    }
     return session;
 }
 
@@ -1586,7 +1681,7 @@ static iTermController *gSharedInstance;
     MutableProfile *windowProfile = [[[self defaultBookmark] mutableCopy] autorelease];
     if ([windowProfile[KEY_WINDOW_TYPE] integerValue] == WINDOW_TYPE_TRADITIONAL_FULL_SCREEN ||
         [windowProfile[KEY_WINDOW_TYPE] integerValue] == WINDOW_TYPE_LION_FULL_SCREEN) {
-        windowProfile[KEY_WINDOW_TYPE] = @(WINDOW_TYPE_NORMAL);
+        windowProfile[KEY_WINDOW_TYPE] = @(iTermWindowDefaultType());
     }
     if (initialPWD) {
         windowProfile[KEY_WORKING_DIRECTORY] = initialPWD;
@@ -1608,12 +1703,17 @@ static iTermController *gSharedInstance;
         profile = [profile dictionaryBySettingObject:@"" forKey:KEY_INITIAL_TEXT];
         const BOOL closeSessionsOnEnd = !!(options & iTermSingleUseWindowOptionsCloseOnTermination);
         const BOOL suppressBrokenPipeActions = !!(options & iTermSingleUseWindowOptionsSuppressBrokenPipeActions);
-        profile = [profile dictionaryBySettingObject:@(closeSessionsOnEnd) forKey:KEY_CLOSE_SESSIONS_ON_END];
+        profile = [profile dictionaryBySettingObject:@(closeSessionsOnEnd ? iTermSessionEndActionClose : iTermSessionEndActionDefault)
+                                              forKey:KEY_SESSION_END_ACTION];
         term.window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
         if (shortLived) {
             profile = [profile dictionaryBySettingObject:@0 forKey:KEY_UNDO_TIMEOUT];
         }
-        PTYSession *session = [term createTabWithProfile:profile withCommand:command environment:environment];
+        PTYSession *session = [term createTabWithProfile:profile
+                                             withCommand:command
+                                             environment:environment
+                                             synchronous:NO
+                                              completion:nil];
         if (suppressBrokenPipeActions) {
             session.suppressBrokenPipeActions = YES;
         }
@@ -1645,8 +1745,11 @@ static iTermController *gSharedInstance;
                               hotkeyWindowType:iTermHotkeyWindowTypeNone
                                        makeKey:YES
                                    canActivate:YES
+                            respectTabbingMode:NO
                                        command:command
-                                         block:makeSession];
+                                         block:makeSession
+                                   synchronous:NO
+                                    completion:nil];
 
     if (bury) {
         [session bury];
